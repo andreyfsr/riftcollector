@@ -7,4 +7,5 @@ ImageHash
 google-auth
 requests
 python-dotenv
+ultralytics
 

@@ -11,6 +11,7 @@ from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
 from PIL import Image
 import cv2
+import numpy as np
 from flask_compress import Compress
 
 from card_matcher import (
@@ -25,6 +26,7 @@ from card_matcher import (
     load_cards_index,
     preprocess_image,
 )
+from card_detector import CardDetector
 
 load_dotenv()
 
@@ -36,6 +38,57 @@ Compress(app)
 
 APP_ROOT = Path(__file__).resolve().parent
 DB_PATH = APP_ROOT / "cards.sqlite"
+_card_detector = None
+
+
+def _get_card_detector():
+    """Get or create the card detector instance."""
+    global _card_detector
+    if _card_detector is not None:
+        return _card_detector
+
+    # Read configuration from environment
+    model_path_str = os.getenv("DETECTOR_MODEL_PATH")
+    model_path = Path(model_path_str) if model_path_str else None
+
+    confidence = os.getenv("DETECTOR_CONFIDENCE")
+    try:
+        confidence = float(confidence) if confidence else 0.5
+    except ValueError:
+        confidence = 0.5
+
+    max_detections = os.getenv("DETECTOR_MAX_DETECTIONS")
+    try:
+        max_detections = int(max_detections) if max_detections else 5
+    except ValueError:
+        max_detections = 5
+
+    min_card_area = os.getenv("DETECTOR_MIN_CARD_AREA")
+    try:
+        min_card_area = int(min_card_area) if min_card_area else 5000
+    except ValueError:
+        min_card_area = 5000
+
+    aspect_ratio_min = os.getenv("DETECTOR_ASPECT_MIN")
+    aspect_ratio_max = os.getenv("DETECTOR_ASPECT_MAX")
+    try:
+        aspect_ratio_min = float(aspect_ratio_min) if aspect_ratio_min else 1.2
+    except ValueError:
+        aspect_ratio_min = 1.2
+    try:
+        aspect_ratio_max = float(aspect_ratio_max) if aspect_ratio_max else 1.8
+    except ValueError:
+        aspect_ratio_max = 1.8
+
+    _card_detector = CardDetector(
+        model_path=model_path,
+        confidence_threshold=confidence,
+        max_detections=max_detections,
+        min_card_area=min_card_area,
+        aspect_ratio_range=(aspect_ratio_min, aspect_ratio_max),
+        use_hash_matching=True,
+    )
+    return _card_detector
 
 
 def _ensure_collection_schema(conn: sqlite3.Connection) -> None:
@@ -459,6 +512,45 @@ def match_card():
             "weak_distance": WEAK_DISTANCE,
         }
     )
+
+
+@app.route("/detect", methods=["POST"])
+def detect_cards():
+    detector = _get_card_detector()
+    if detector is None:
+        return jsonify({"error": "Detector not available"}), 503
+
+    payload = request.get_json(silent=True) or {}
+    image_data = payload.get("image")
+    if not image_data:
+        return jsonify({"error": "No image provided"}), 400
+
+    if "base64," in image_data:
+        image_data = image_data.split("base64,", 1)[1]
+
+    try:
+        raw_bytes = base64.b64decode(image_data)
+        frame = cv2.imdecode(np.frombuffer(raw_bytes, np.uint8), cv2.IMREAD_COLOR)
+    except Exception:
+        frame = None
+
+    if frame is None:
+        return jsonify({"error": "Invalid image payload"}), 400
+
+    detections = detector.detect(frame)
+    serialized = []
+    for det in detections:
+        polygon = det.polygon if det.polygon is not None else []
+        serialized.append(
+            {
+                "card_id": det.card_id,
+                "confidence": det.confidence,
+                "bbox": list(det.bbox),
+                "polygon": [[float(x), float(y)] for x, y in polygon] if len(polygon) > 0 else [],
+                "match_distance": det.match_distance,
+            }
+        )
+    return jsonify({"detections": serialized}), 200
 
 
 if __name__ == "__main__":
