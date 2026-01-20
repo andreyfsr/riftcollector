@@ -11,7 +11,13 @@
   <div class="layout">
     <div class="panel">
       <h2>Show a Riftbound card</h2>
-      <video id="liveCamera" autoplay playsinline muted></video>
+      <div style="position: relative; width: 100%; max-width: 720px;">
+        <video id="liveCamera" autoplay playsinline muted style="width: 100%; height: auto;"></video>
+        <canvas
+          id="liveOverlay"
+          style="position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; background: transparent; border-radius: 12px;"
+        ></canvas>
+      </div>
       <canvas id="liveCanvas" hidden></canvas>
       <div class="camera-actions">
         <button id="liveStart" class="secondary" type="button">Start camera</button>
@@ -26,7 +32,24 @@
       <h2>Debug output</h2>
       <div class="meta">Share this log to tweak matching settings.</div>
       <button id="debugCopy" class="secondary" type="button">Copy debug log</button>
-      <pre id="debugOutput" class="result" style="white-space: pre-wrap;"></pre>
+      <div class="result" style="margin-top: 12px;">
+        <strong>Detection feedback</strong>
+        <div id="liveDetectionStatus">Waiting for detections...</div>
+        <label style="display: block; margin-top: 10px;">
+          <input id="liveIncludeSnapshot" type="checkbox" checked />
+          Include a small frame snapshot in the feedback log
+        </label>
+        <div class="camera-actions" style="margin-top: 6px;">
+          <button id="liveFeedbackDownload" class="secondary" type="button" disabled>
+            Download feedback JSON
+          </button>
+        </div>
+      </div>
+      <pre
+        id="debugOutput"
+        class="result"
+        style="white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;"
+      ></pre>
     </div>
   </div>
 
@@ -60,6 +83,18 @@
     </div>
   </div>
 
+  <div id="liveDetectionModal" class="modal-backdrop" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="liveDetectionTitle">
+      <h3 id="liveDetectionTitle">Detection check</h3>
+      <p id="liveDetectionMeta">Is this detection correct?</p>
+      <div class="modal-actions">
+        <button id="liveDetectionCorrect" type="button">Right match</button>
+        <button id="liveDetectionWrong" class="secondary" type="button">Wrong match</button>
+        <button id="liveDetectionNone" class="secondary" type="button">No card shown</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const liveCamera = document.getElementById("liveCamera");
     const liveCanvas = document.getElementById("liveCanvas");
@@ -69,6 +104,8 @@
     const liveStop = document.getElementById("liveStop");
     const liveStatus = document.getElementById("liveStatus");
     const debugOutput = document.getElementById("debugOutput");
+    const liveOverlay = document.getElementById("liveOverlay");
+    const overlayCtx = liveOverlay.getContext("2d");
 
     const liveMatchModal = document.getElementById("liveMatchModal");
     const liveMatchImage = document.getElementById("liveMatchImage");
@@ -82,18 +119,36 @@
     const liveCorrection = document.getElementById("liveCorrection");
     const liveCorrectionInput = document.getElementById("liveCorrectionInput");
     const liveSubmitCorrection = document.getElementById("liveSubmitCorrection");
+    const liveDetectionStatus = document.getElementById("liveDetectionStatus");
+    const liveIncludeSnapshot = document.getElementById("liveIncludeSnapshot");
+    const liveDetectionCorrect = document.getElementById("liveDetectionCorrect");
+    const liveDetectionWrong = document.getElementById("liveDetectionWrong");
+    const liveDetectionNone = document.getElementById("liveDetectionNone");
+    const liveDetectionModal = document.getElementById("liveDetectionModal");
+    const liveDetectionMeta = document.getElementById("liveDetectionMeta");
+    const liveFeedbackDownload = document.getElementById("liveFeedbackDownload");
 
     let cameraStream = null;
     let autoScanTimer = null;
+    let detectTimer = null;
     let autoScanEnabled = true;
     let isMatching = false;
+    let isDetecting = false;
+    let isDetectionPromptOpen = false;
     let lastMatchPayload = null;
     let lastCaptureInfo = null;
     let lastAutoMatchId = null;
     let lastAutoMatchCount = 0;
     let lastPresenceLog = 0;
+    let lastDetectionPayload = null;
+    let lastDetectionMeta = null;
+    let lastDetectionSnapshot = null;
+    let lastDetectionFeedbackAt = 0;
+    const feedbackEntries = [];
     const detectCanvas = document.createElement("canvas");
     const detectCtx = detectCanvas.getContext("2d", { willReadFrequently: true });
+    const detectFrameCanvas = document.createElement("canvas");
+    const detectFrameCtx = detectFrameCanvas.getContext("2d");
     const DETECT_WIDTH = 160;
     const DETECT_HEIGHT = 120;
     const EDGE_THRESHOLD = 35;
@@ -103,6 +158,10 @@
     const BORDER_CENTER_RATIO_MIN = 1.15;
     const VARIANCE_MIN = 7000;
     const PRESENCE_LOG_THROTTLE_MS = 2500;
+    const DETECT_INTERVAL_MS = 200;
+    const DETECT_FEEDBACK_COOLDOWN_MS = 1500;
+    const DETECT_CAPTURE_WIDTH = 320;
+    const DETECT_CAPTURE_QUALITY = 0.45;
 
     function setStatus(message, isError = false) {
       if (isError) {
@@ -118,6 +177,78 @@
       debugOutput.textContent = debugOutput.textContent
         ? `${line}\n${debugOutput.textContent}`
         : line;
+    }
+
+    function setDetectionStatus(message) {
+      liveDetectionStatus.textContent = message;
+    }
+
+    function updateFeedbackDownload() {
+      liveFeedbackDownload.disabled = feedbackEntries.length === 0;
+    }
+
+    function openDetectionModal() {
+      liveDetectionModal.style.display = "flex";
+      liveDetectionModal.setAttribute("aria-hidden", "false");
+      isDetectionPromptOpen = true;
+      stopDetectLoop();
+    }
+
+    function closeDetectionModal() {
+      liveDetectionModal.style.display = "none";
+      liveDetectionModal.setAttribute("aria-hidden", "true");
+      isDetectionPromptOpen = false;
+      if (cameraStream) {
+        startDetectLoop();
+      }
+    }
+
+    function syncOverlaySize(width, height) {
+      if (liveOverlay.width !== width || liveOverlay.height !== height) {
+        liveOverlay.width = width;
+        liveOverlay.height = height;
+      }
+    }
+
+    function clearOverlay() {
+      overlayCtx.clearRect(0, 0, liveOverlay.width, liveOverlay.height);
+    }
+
+    function renderDetections(detections) {
+      clearOverlay();
+      if (!Array.isArray(detections) || !detections.length) {
+        return;
+      }
+      overlayCtx.lineWidth = 2;
+      overlayCtx.strokeStyle = "#22d3ee";
+      overlayCtx.fillStyle = "rgba(34, 211, 238, 0.12)";
+      overlayCtx.font = "16px system-ui, sans-serif";
+      overlayCtx.textBaseline = "top";
+      detections.forEach((det) => {
+        const polygon = det.polygon || [];
+        if (polygon.length < 3) {
+          return;
+        }
+        overlayCtx.beginPath();
+        polygon.forEach((point, index) => {
+          const [x, y] = point;
+          if (index === 0) {
+            overlayCtx.moveTo(x, y);
+          } else {
+            overlayCtx.lineTo(x, y);
+          }
+        });
+        overlayCtx.closePath();
+        overlayCtx.fill();
+        overlayCtx.stroke();
+        const label = `${det.card_id || "Card"} (${det.inliers || 0})`;
+        const [x, y] = polygon[0];
+        overlayCtx.fillStyle = "rgba(15, 23, 42, 0.7)";
+        overlayCtx.fillRect(x - 2, Math.max(y - 20, 2), overlayCtx.measureText(label).width + 8, 20);
+        overlayCtx.fillStyle = "#e2e8f0";
+        overlayCtx.fillText(label, x + 2, Math.max(y - 18, 4));
+        overlayCtx.fillStyle = "rgba(34, 211, 238, 0.12)";
+      });
     }
 
     async function copyDebugLog() {
@@ -203,6 +334,7 @@
         if (autoScanEnabled) {
           startAutoScan();
         }
+        startDetectLoop();
       } catch (error) {
         setStatus("Camera permission denied or unavailable.", true);
         appendDebug(`camera_error: ${error?.message || error}`);
@@ -211,6 +343,7 @@
 
     function stopCamera() {
       stopAutoScan();
+      stopDetectLoop();
       if (cameraStream) {
         cameraStream.getTracks().forEach((track) => track.stop());
         cameraStream = null;
@@ -220,7 +353,214 @@
       liveToggleAuto.disabled = true;
       liveStop.disabled = true;
       liveStart.disabled = false;
+      clearOverlay();
       setStatus("Camera stopped.");
+    }
+
+    function startDetectLoop() {
+      if (!cameraStream || detectTimer) {
+        return;
+      }
+      detectTimer = setInterval(() => {
+        if (
+          !cameraStream ||
+          isMatching ||
+          isDetecting ||
+          isDetectionPromptOpen ||
+          liveMatchModal.getAttribute("aria-hidden") === "false"
+        ) {
+          return;
+        }
+        detectFrame();
+      }, DETECT_INTERVAL_MS);
+      appendDebug("detect_loop_start");
+    }
+
+    function stopDetectLoop() {
+      if (detectTimer) {
+        clearInterval(detectTimer);
+        detectTimer = null;
+      }
+      appendDebug("detect_loop_stop");
+    }
+
+    function getVideoSize() {
+      return {
+        width: liveCamera.videoWidth || 1280,
+        height: liveCamera.videoHeight || 720,
+      };
+    }
+
+    function captureFrame() {
+      const { width, height } = getVideoSize();
+      liveCanvas.width = width;
+      liveCanvas.height = height;
+      syncOverlaySize(width, height);
+      const ctx = liveCanvas.getContext("2d");
+      ctx.drawImage(liveCamera, 0, 0, width, height);
+      return { width, height };
+    }
+
+    function captureDetectFrame() {
+      const { width, height } = getVideoSize();
+      const scale = Math.min(1, DETECT_CAPTURE_WIDTH / width);
+      const detectWidth = Math.max(1, Math.round(width * scale));
+      const detectHeight = Math.max(1, Math.round(height * scale));
+      detectFrameCanvas.width = detectWidth;
+      detectFrameCanvas.height = detectHeight;
+      syncOverlaySize(width, height);
+      detectFrameCtx.drawImage(liveCamera, 0, 0, detectWidth, detectHeight);
+      return { width, height, detectWidth, detectHeight, scale };
+    }
+
+    function captureSnapshot(maxWidth = 320) {
+      if (!liveCanvas.width || !liveCanvas.height) {
+        return null;
+      }
+      const scale = Math.min(1, maxWidth / liveCanvas.width);
+      const snapCanvas = document.createElement("canvas");
+      snapCanvas.width = Math.round(liveCanvas.width * scale);
+      snapCanvas.height = Math.round(liveCanvas.height * scale);
+      const snapCtx = snapCanvas.getContext("2d");
+      snapCtx.drawImage(liveCanvas, 0, 0, snapCanvas.width, snapCanvas.height);
+      return snapCanvas.toDataURL("image/jpeg", 0.75);
+    }
+
+    function recordDetectionFeedback(isCorrect) {
+      if (!lastDetectionPayload) {
+        setStatus("No detection to confirm yet.", true);
+        return;
+      }
+      const detectionCount = (lastDetectionPayload?.detections || []).length;
+      const entry = {
+        timestamp: new Date().toISOString(),
+        correct: isCorrect,
+        detection: lastDetectionPayload,
+        meta: lastDetectionMeta,
+        snapshot: lastDetectionSnapshot,
+      };
+      feedbackEntries.push(entry);
+      updateFeedbackDownload();
+      const logEntry = {
+        timestamp: entry.timestamp,
+        correct: entry.correct,
+        no_card: entry.no_card,
+        detection: entry.detection,
+        meta: entry.meta,
+        snapshot_bytes: entry.snapshot ? entry.snapshot.length : 0,
+      };
+      appendDebug(`detect_feedback ${JSON.stringify(logEntry)}`);
+      setDetectionStatus("Feedback saved. Waiting for next detection...");
+      closeDetectionModal();
+      lastDetectionFeedbackAt = Date.now();
+      lastDetectionPayload = null;
+      lastDetectionMeta = null;
+      lastDetectionSnapshot = null;
+      if (detectionCount === 0) {
+        clearOverlay();
+      }
+    }
+
+    function recordNoCardFeedback() {
+      const entry = {
+        timestamp: new Date().toISOString(),
+        correct: false,
+        detection: lastDetectionPayload,
+        meta: lastDetectionMeta,
+        snapshot: lastDetectionSnapshot,
+        no_card: true,
+      };
+      feedbackEntries.push(entry);
+      updateFeedbackDownload();
+      const logEntry = {
+        timestamp: entry.timestamp,
+        correct: entry.correct,
+        no_card: entry.no_card,
+        detection: entry.detection,
+        meta: entry.meta,
+        snapshot_bytes: entry.snapshot ? entry.snapshot.length : 0,
+      };
+      appendDebug(`detect_feedback ${JSON.stringify(logEntry)}`);
+      setDetectionStatus("No card logged. Waiting for next detection...");
+      closeDetectionModal();
+      lastDetectionFeedbackAt = Date.now();
+      lastDetectionPayload = null;
+      lastDetectionMeta = null;
+      lastDetectionSnapshot = null;
+      clearOverlay();
+    }
+
+    async function detectFrame() {
+      if (!liveCamera || !cameraStream) {
+        return;
+      }
+      if (Date.now() - lastDetectionFeedbackAt < DETECT_FEEDBACK_COOLDOWN_MS) {
+        return;
+      }
+      const { width, height, detectWidth, detectHeight, scale } = captureDetectFrame();
+      const dataUrl = detectFrameCanvas.toDataURL("image/jpeg", DETECT_CAPTURE_QUALITY);
+      isDetecting = true;
+      const startedAt = performance.now();
+      try {
+        const response = await fetch("/detect", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image: dataUrl }),
+        });
+        const payload = await response.json();
+        const duration = Math.round(performance.now() - startedAt);
+        if (!response.ok) {
+          appendDebug(
+            `detect_failed status=${response.status} duration=${duration}ms ` +
+              `payload=${JSON.stringify(payload)}`
+          );
+          clearOverlay();
+          setDetectionStatus("Detection failed. Waiting...");
+          isDetecting = false;
+          return;
+        }
+        const rawDetections = payload?.detections || [];
+        const scaleUp = scale > 0 ? 1 / scale : 1;
+        const scaledDetections =
+          scaleUp === 1
+            ? rawDetections
+            : rawDetections.map((det) => ({
+                ...det,
+                polygon: (det.polygon || []).map(([x, y]) => [x * scaleUp, y * scaleUp]),
+              }));
+        renderDetections(scaledDetections);
+        const count = (payload?.detections || []).length;
+        if (count) {
+          lastDetectionPayload = payload;
+          lastDetectionMeta = { width, height, detectWidth, detectHeight, duration };
+          let snapshot = null;
+          if (liveIncludeSnapshot?.checked) {
+            captureFrame();
+            snapshot = captureSnapshot();
+          }
+          lastDetectionSnapshot = snapshot;
+          setDetectionStatus(`Detected ${count} card${count > 1 ? "s" : ""}.`);
+          liveDetectionMeta.textContent = `Detected ${count} card${count > 1 ? "s" : ""}. Is it correct?`;
+          if (!isDetectionPromptOpen) {
+            openDetectionModal();
+          }
+        } else {
+          lastDetectionPayload = null;
+          lastDetectionMeta = null;
+          lastDetectionSnapshot = null;
+          setDetectionStatus("No detections.");
+        }
+        appendDebug(
+          `detect_ok duration=${duration}ms ` +
+            `size=${width}x${height} detect=${detectWidth}x${detectHeight} ` +
+            `count=${(payload?.detections || []).length}`
+        );
+      } catch (error) {
+        appendDebug(`detect_error: ${error?.message || error}`);
+        setDetectionStatus("Detection error. Waiting...");
+      } finally {
+        isDetecting = false;
+      }
     }
 
     function startAutoScan() {
@@ -265,12 +605,7 @@
         setStatus("Start the camera before scanning.", true);
         return;
       }
-      const width = liveCamera.videoWidth || 1280;
-      const height = liveCamera.videoHeight || 720;
-      liveCanvas.width = width;
-      liveCanvas.height = height;
-      const ctx = liveCanvas.getContext("2d");
-      ctx.drawImage(liveCamera, 0, 0, width, height);
+      const { width, height } = captureFrame();
       const presence = detectCardPresence();
       if (!presence.present) {
         setStatus("No card detected. Hold a card in view.", true);
@@ -482,9 +817,20 @@
       }
     });
 
+    liveDetectionModal.addEventListener("click", (event) => {
+      if (event.target === liveDetectionModal) {
+        closeDetectionModal();
+      }
+    });
+
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && liveMatchModal.getAttribute("aria-hidden") === "false") {
-        closeMatchModal();
+      if (event.key === "Escape") {
+        if (liveMatchModal.getAttribute("aria-hidden") === "false") {
+          closeMatchModal();
+        }
+        if (liveDetectionModal.getAttribute("aria-hidden") === "false") {
+          closeDetectionModal();
+        }
       }
     });
 
@@ -493,9 +839,30 @@
     liveScanNow.addEventListener("click", () => captureAndMatch({ source: "manual" }));
     liveToggleAuto.addEventListener("click", toggleAutoScan);
     debugCopy.addEventListener("click", copyDebugLog);
+    liveDetectionCorrect.addEventListener("click", () => recordDetectionFeedback(true));
+    liveDetectionWrong.addEventListener("click", () => recordDetectionFeedback(false));
+    liveDetectionNone.addEventListener("click", recordNoCardFeedback);
+    liveFeedbackDownload.addEventListener("click", () => {
+      if (!feedbackEntries.length) {
+        return;
+      }
+      const blob = new Blob([JSON.stringify(feedbackEntries, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `riftcollector-detection-feedback-${Date.now()}.json`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    });
 
     window.addEventListener("load", () => {
       setStatus("Allow camera access, then show a Riftbound card.");
+      setDetectionStatus("Waiting for detections...");
+      updateFeedbackDownload();
       startCamera();
     });
 
