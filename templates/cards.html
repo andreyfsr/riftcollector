@@ -1,0 +1,1003 @@
+{% extends "base.html" %}
+
+{% block title %}My Collection · Riftcollector{% endblock %}
+
+{% block content %}
+  <style>
+    .loading-state {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 16px;
+      border-radius: 10px;
+      background: #0f172a;
+      color: #cbd5f5;
+    }
+    .loading-spinner {
+      width: 28px;
+      height: 28px;
+      border-radius: 999px;
+      border: 3px solid #1f2937;
+      border-top-color: #2563eb;
+      animation: spin 0.9s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+    #collectionLoading {
+      display: flex;
+    }
+    #collectionSection:not(.is-loading) #collectionLoading {
+      display: none;
+    }
+    #collectionSection.is-loading #resultsMeta,
+    #collectionSection.is-loading #collectionGrid,
+    #collectionSection.is-loading #pagination {
+      display: none;
+    }
+  </style>
+  <h1>My Collection</h1>
+  <div class="meta">
+    Browse {{ card_count }} cards · {{ image_count }} local images available
+  </div>
+
+  <div class="library-layout">
+    <aside class="filter-panel">
+      <input
+        id="cardSearch"
+        class="filter-search"
+        type="search"
+        placeholder="Search by name, set, or code"
+      />
+
+      <div class="filter-group">
+        <h3>My Collection</h3>
+        <div class="filter-options" id="ownershipFilters">
+          <label>
+            <input type="radio" name="ownershipFilter" value="owned" checked />
+            <span>Owned</span>
+          </label>
+          <label>
+            <input type="radio" name="ownershipFilter" value="unowned" />
+            <span>Unowned</span>
+          </label>
+          <label>
+            <input type="radio" name="ownershipFilter" value="all" />
+            <span>All cards</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="filter-group">
+        <h3>Sets</h3>
+        <div class="dropdown">
+          <button id="setDropdownToggle" class="dropdown-toggle" type="button">
+            Set <span id="setDropdownLabel">All</span>
+          </button>
+          <div id="setDropdownMenu" class="dropdown-menu">
+            <div id="setFilters" class="filter-options"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="filter-group">
+        <h3>Types</h3>
+        <div class="dropdown">
+          <button id="typeDropdownToggle" class="dropdown-toggle" type="button">
+            Type <span id="typeDropdownLabel">All</span>
+          </button>
+          <div id="typeDropdownMenu" class="dropdown-menu">
+            <div id="typeFilters" class="filter-options"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="filter-group">
+        <h3>Rarity</h3>
+        <div class="dropdown">
+          <button id="rarityDropdownToggle" class="dropdown-toggle" type="button">
+            Rarity <span id="rarityDropdownLabel">All</span>
+          </button>
+          <div id="rarityDropdownMenu" class="dropdown-menu">
+            <div id="rarityFilters" class="filter-options"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="filter-group">
+        <h3>Stats</h3>
+        <label class="filter-input">
+          <span>Energy Cost</span>
+          <input id="energyFilter" type="text" inputmode="numeric" placeholder="Any" />
+        </label>
+        <label class="filter-input">
+          <span>Power Cost</span>
+          <input id="powerFilter" type="text" inputmode="numeric" placeholder="Any" />
+        </label>
+        <label class="filter-input">
+          <span>Might</span>
+          <input id="mightFilter" type="text" inputmode="numeric" placeholder="Any" />
+        </label>
+      </div>
+
+      <div class="filter-actions">
+        <button id="clearFilters" class="secondary" type="button">Clear</button>
+        <button id="resetSearch" class="secondary" type="button">Reset</button>
+      </div>
+    </aside>
+
+    <section id="collectionSection" class="is-loading">
+      <div id="collectionLoading" class="loading-state" role="status" aria-live="polite">
+        <span class="loading-spinner" aria-hidden="true"></span>
+        <span>Loading cards...</span>
+      </div>
+      <div class="meta" id="resultsMeta">Loading cards...</div>
+      <div id="collectionGrid" class="library-grid"></div>
+      <div id="pagination" class="pagination"></div>
+    </section>
+  </div>
+
+  <div id="cardModal" class="modal-backdrop" aria-hidden="true">
+    <div class="modal card-modal" role="dialog" aria-modal="true" aria-labelledby="cardModalTitle">
+      <img id="cardModalImage" alt="Card preview" />
+      <div class="card-info">
+        <h3 id="cardModalTitle"></h3>
+        <div id="cardTags" class="tag-row"></div>
+        <div class="stat-row">
+          <div class="stat-tile">
+            <span>Energy</span>
+            <strong id="cardEnergy">-</strong>
+          </div>
+          <div class="stat-tile">
+            <span>Power</span>
+            <strong id="cardPower">-</strong>
+          </div>
+          <div class="stat-tile">
+            <span>Might</span>
+            <strong id="cardMight">-</strong>
+          </div>
+        </div>
+        <div class="card-detail">
+          <small>Description</small>
+          <div id="cardText">No description available.</div>
+        </div>
+        <div class="card-detail">
+          <small>Card Information</small>
+          <div id="cardArtist"></div>
+          <div id="cardSet"></div>
+          <div id="cardNumber"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script id="cardsData" type="application/json">{{ cards | safe }}</script>
+  <script>
+    const cards = JSON.parse(document.getElementById("cardsData").textContent || "[]");
+    const collectionGrid = document.getElementById("collectionGrid");
+    const resultsMeta = document.getElementById("resultsMeta");
+    const collectionSection = document.getElementById("collectionSection");
+    const cardSearch = document.getElementById("cardSearch");
+    const setFilters = document.getElementById("setFilters");
+    const typeFilters = document.getElementById("typeFilters");
+    const rarityFilters = document.getElementById("rarityFilters");
+    const clearFilters = document.getElementById("clearFilters");
+    const resetSearch = document.getElementById("resetSearch");
+    const energyFilter = document.getElementById("energyFilter");
+    const powerFilter = document.getElementById("powerFilter");
+    const mightFilter = document.getElementById("mightFilter");
+    const pagination = document.getElementById("pagination");
+    const typeDropdownToggle = document.getElementById("typeDropdownToggle");
+    const typeDropdownMenu = document.getElementById("typeDropdownMenu");
+    const typeDropdownLabel = document.getElementById("typeDropdownLabel");
+    const setDropdownToggle = document.getElementById("setDropdownToggle");
+    const setDropdownMenu = document.getElementById("setDropdownMenu");
+    const setDropdownLabel = document.getElementById("setDropdownLabel");
+    const rarityDropdownToggle = document.getElementById("rarityDropdownToggle");
+    const rarityDropdownMenu = document.getElementById("rarityDropdownMenu");
+    const rarityDropdownLabel = document.getElementById("rarityDropdownLabel");
+    const ownershipFilterInputs = document.querySelectorAll(
+      'input[name="ownershipFilter"]'
+    );
+
+    const cardModal = document.getElementById("cardModal");
+    const cardModalImage = document.getElementById("cardModalImage");
+    const cardModalTitle = document.getElementById("cardModalTitle");
+    const cardTags = document.getElementById("cardTags");
+    const cardEnergy = document.getElementById("cardEnergy");
+    const cardPower = document.getElementById("cardPower");
+    const cardMight = document.getElementById("cardMight");
+    const cardText = document.getElementById("cardText");
+    const cardArtist = document.getElementById("cardArtist");
+    const cardSet = document.getElementById("cardSet");
+    const cardNumber = document.getElementById("cardNumber");
+
+    const storageKey = "riftbound_saved_cards";
+    let serverUser = null;
+    let ownedCardKeys = new Set();
+    let ownedCardCounts = new Map();
+    let savedCardsMap = new Map();
+    const cardsById = new Map(
+      cards.map((card) => [normalize(card?.id), card]).filter(([key]) => key)
+    );
+
+    const filterState = {
+      sets: new Set(),
+      types: new Set(),
+      rarities: new Set(),
+      numeric: {
+        energy: null,
+        power: null,
+        might: null,
+      },
+      ownership: "owned",
+    };
+
+    const pageSize = 60;
+    let filteredCards = [];
+    let currentPage = 1;
+    let totalPages = 1;
+    const cachedImages = new Set();
+
+    const typeOrder = [
+      "legend",
+      "battlefield",
+      "unit",
+      "gear",
+      "spell",
+      "rune",
+      "signed",
+    ];
+
+    function toLabel(value) {
+      if (!value) return "";
+      return value[0].toUpperCase() + value.slice(1);
+    }
+
+    function getCardType(card) {
+      return (card.type || "").toString().toLowerCase();
+    }
+
+    function cardHasSigned(card) {
+      return normalize(card.supertype).includes("signed");
+    }
+
+    function getCardTypes(card) {
+      const types = [];
+      const baseType = toLabel(getCardType(card));
+      if (baseType) {
+        types.push(baseType);
+      }
+      if (cardHasSigned(card)) {
+        types.push("Signed");
+      }
+      return types;
+    }
+
+    function normalize(value) {
+      return (value || "").toString().trim().toLowerCase();
+    }
+
+    function toNumber(value) {
+      if (value === null || value === undefined || value === "") {
+        return null;
+      }
+      const trimmed = value.toString().trim();
+      if (trimmed === "-") {
+        return 0;
+      }
+      const numeric = Number(trimmed);
+      return Number.isFinite(numeric) ? numeric : null;
+    }
+
+    function parseNumericFilter(value) {
+      const trimmed = (value || "").toString().trim();
+      if (!trimmed) {
+        return null;
+      }
+      const parts = trimmed.split("-").map((part) => part.trim()).filter(Boolean);
+      if (parts.length === 1) {
+        const numeric = toNumber(parts[0]);
+        return numeric === null ? null : { min: numeric, max: numeric };
+      }
+      if (parts.length === 2) {
+        const minValue = toNumber(parts[0]);
+        const maxValue = toNumber(parts[1]);
+        if (minValue === null || maxValue === null) {
+          return null;
+        }
+        return {
+          min: Math.min(minValue, maxValue),
+          max: Math.max(minValue, maxValue),
+        };
+      }
+      return null;
+    }
+
+    function updateNumericFilters() {
+      filterState.numeric.energy = parseNumericFilter(energyFilter?.value);
+      filterState.numeric.power = parseNumericFilter(powerFilter?.value);
+      filterState.numeric.might = parseNumericFilter(mightFilter?.value);
+    }
+
+    function matchesNumericFilter(filterRange, cardValue) {
+      if (!filterRange) {
+        return true;
+      }
+      const cardNumeric = toNumber(cardValue);
+      if (cardNumeric === null) {
+        return filterRange.min <= 0 && filterRange.max >= 0;
+      }
+      return cardNumeric >= filterRange.min && cardNumeric <= filterRange.max;
+    }
+
+    function buildOptions(values) {
+      return Array.from(values).sort((a, b) => a.localeCompare(b));
+    }
+
+    function renderFilterOptions(container, options, groupKey) {
+      container.innerHTML = "";
+      options.forEach((value) => {
+        const label = document.createElement("label");
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = value;
+        checkbox.addEventListener("change", () => {
+          if (checkbox.checked) {
+            filterState[groupKey].add(value);
+          } else {
+            filterState[groupKey].delete(value);
+          }
+          updateDropdownLabel(groupKey);
+          renderCards();
+        });
+        const text = document.createElement("span");
+        text.textContent = value;
+        label.appendChild(checkbox);
+        label.appendChild(text);
+        container.appendChild(label);
+      });
+    }
+
+    function buildFilters() {
+      const setValues = new Set();
+      const rarityValues = new Set();
+      const typeValues = new Set();
+
+      cards.forEach((card) => {
+        if (card.set_label) {
+          setValues.add(card.set_label);
+        }
+        if (card.rarity) {
+          rarityValues.add(card.rarity);
+        }
+        getCardTypes(card).forEach((type) => {
+          if (type) {
+            typeValues.add(type);
+          }
+        });
+      });
+
+      const sortedSets = buildOptions(setValues);
+      const sortedRarities = buildOptions(rarityValues);
+      const sortedTypes = typeOrder
+        .filter((type) => typeValues.has(toLabel(type)))
+        .map((type) => toLabel(type));
+
+      renderFilterOptions(setFilters, sortedSets, "sets");
+      renderFilterOptions(typeFilters, sortedTypes, "types");
+      renderFilterOptions(rarityFilters, sortedRarities, "rarities");
+      updateDropdownLabel("sets");
+      updateDropdownLabel("types");
+      updateDropdownLabel("rarities");
+    }
+
+    function readSavedCards() {
+      const raw = localStorage.getItem(storageKey);
+      if (!raw) {
+        return [];
+      }
+      try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (error) {
+        return [];
+      }
+    }
+
+    function writeSavedCards(cards) {
+      const payload = Array.isArray(cards) ? cards : [];
+      localStorage.setItem(storageKey, JSON.stringify(payload));
+    }
+
+    function mergeCollections(localCards, remoteCards) {
+      const merged = new Map();
+      (remoteCards || []).forEach((card) => {
+        if (!card || !card.key) return;
+        merged.set(card.key, { ...card });
+      });
+      (localCards || []).forEach((card) => {
+        if (!card || !card.key) return;
+        const existing = merged.get(card.key);
+        if (!existing) {
+          merged.set(card.key, { ...card });
+          return;
+        }
+        const localCount = Number(card.count) || 1;
+        const remoteCount = Number(existing.count) || 1;
+        merged.set(card.key, {
+          ...existing,
+          ...card,
+          count: Math.max(localCount, remoteCount),
+        });
+      });
+      return Array.from(merged.values());
+    }
+
+    function refreshOwnedCards(savedCards) {
+      ownedCardKeys = new Set();
+      ownedCardCounts = new Map();
+      savedCardsMap = new Map();
+      (savedCards || []).forEach((card) => {
+        const rawKey = card?.key || card?.card_key;
+        const key = normalize(rawKey);
+        if (!key) return;
+        const count = Number(card?.count) || 1;
+        savedCardsMap.set(key, {
+          key: rawKey,
+          name: card?.name,
+          image_url: card?.image_url,
+          count,
+        });
+        if (count > 0) {
+          ownedCardKeys.add(key);
+          ownedCardCounts.set(key, count);
+        }
+      });
+    }
+
+    function getOwnedCount(card) {
+      const cardKey = normalize(card?.id);
+      return ownedCardCounts.get(cardKey) || 0;
+    }
+
+    function isCardOwned(card) {
+      return getOwnedCount(card) > 0;
+    }
+
+    function updateCollectionStorage() {
+      const payload = Array.from(savedCardsMap.values()).filter(
+        (card) => (Number(card?.count) || 0) > 0
+      );
+      writeSavedCards(payload);
+      saveServerCollection(payload);
+      refreshOwnedCards(payload);
+    }
+
+    function setCardCount(card, nextCount) {
+      const cardKey = normalize(card?.id);
+      if (!cardKey) return;
+      if (nextCount <= 0) {
+        savedCardsMap.delete(cardKey);
+      } else {
+        savedCardsMap.set(cardKey, {
+          key: card.id,
+          name: card.name,
+          image_url: card.image_url,
+          count: nextCount,
+        });
+      }
+      updateCollectionStorage();
+    }
+
+    function matchesFilters(card) {
+      const query = normalize(cardSearch.value);
+      if (query) {
+        const haystack = [
+          card.name,
+          card.public_code,
+          card.set_label,
+          card.set_id,
+          card.type,
+          card.supertype,
+          card.rarity,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        if (!haystack.includes(query)) {
+          return false;
+        }
+      }
+
+      if (filterState.ownership === "owned" && !isCardOwned(card)) {
+        return false;
+      }
+
+      if (filterState.ownership === "unowned" && isCardOwned(card)) {
+        return false;
+      }
+
+      if (filterState.sets.size > 0 && !filterState.sets.has(card.set_label)) {
+        return false;
+      }
+
+      if (filterState.types.size > 0) {
+        const types = getCardTypes(card);
+        const hasMatch = types.some((type) => filterState.types.has(type));
+        if (!hasMatch) {
+          return false;
+        }
+      }
+
+      if (filterState.rarities.size > 0 && !filterState.rarities.has(card.rarity)) {
+        return false;
+      }
+
+      if (!matchesNumericFilter(filterState.numeric.energy, card.energy)) {
+        return false;
+      }
+
+      if (!matchesNumericFilter(filterState.numeric.power, card.power)) {
+        return false;
+      }
+
+      if (!matchesNumericFilter(filterState.numeric.might, card.might)) {
+        return false;
+      }
+
+      return true;
+    }
+
+    function showLoading() {
+      if (collectionSection) {
+        collectionSection.classList.add("is-loading");
+      }
+    }
+
+    function hideLoading() {
+      if (collectionSection) {
+        collectionSection.classList.remove("is-loading");
+      }
+    }
+
+    function updatePaginationVisibility() {
+      pagination.hidden = totalPages <= 1;
+    }
+
+    async function renderCards() {
+      showLoading();
+      updateNumericFilters();
+      filteredCards = cards.filter(matchesFilters);
+      currentPage = 1;
+      totalPages = Math.max(1, Math.ceil(filteredCards.length / pageSize));
+      resultsMeta.textContent = `${filteredCards.length} cards shown`;
+      collectionGrid.innerHTML = "";
+      pagination.innerHTML = "";
+      if (!filteredCards.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty-state";
+        empty.textContent = "No cards match your filters yet.";
+        collectionGrid.appendChild(empty);
+        updatePaginationVisibility();
+        hideLoading();
+        return;
+      }
+      await loadPage(currentPage);
+      updatePaginationVisibility();
+      hideLoading();
+    }
+
+    function updateDropdownLabel(groupKey) {
+      const labelMap = {
+        sets: setDropdownLabel,
+        types: typeDropdownLabel,
+        rarities: rarityDropdownLabel,
+      };
+      const label = labelMap[groupKey];
+      if (!label) return;
+      const count = filterState[groupKey].size;
+      label.textContent = count ? `${count} selected` : "All";
+    }
+
+    function setOwnershipFilter(value, { render = true } = {}) {
+      filterState.ownership = value;
+      ownershipFilterInputs.forEach((input) => {
+        input.checked = input.value === value;
+      });
+      if (render) {
+        renderCards();
+      }
+    }
+
+    function preloadImages(imageUrls) {
+      return Promise.all(
+        imageUrls.map(
+          (url) =>
+            new Promise((resolve) => {
+              if (!url) {
+                resolve();
+                return;
+              }
+              if (cachedImages.has(url)) {
+                resolve();
+                return;
+              }
+              const img = new Image();
+              img.onload = () => {
+                cachedImages.add(url);
+                resolve();
+              };
+              img.onerror = () => resolve();
+              img.src = url;
+            })
+        )
+      );
+    }
+
+    function revealWhenDecoded(img) {
+      const reveal = () => {
+        img.classList.add("is-ready");
+        img.style.transform = "translateZ(0)";
+        requestAnimationFrame(() => {
+          img.style.transform = "";
+        });
+      };
+      if (img.decode) {
+        img.decode().then(reveal).catch(reveal);
+        return;
+      }
+      if (img.complete) {
+        reveal();
+        return;
+      }
+      img.addEventListener("load", reveal, { once: true });
+      img.addEventListener("error", reveal, { once: true });
+    }
+
+    function updateTileControls(tile, count) {
+      const badge = tile.querySelector(".collection-count");
+      const decrement = tile.querySelector('button[data-action="decrement"]');
+      if (badge) {
+        badge.textContent = String(count);
+        badge.hidden = count <= 0;
+      }
+      if (decrement) {
+        decrement.disabled = count <= 0;
+      }
+    }
+
+    async function loadPage(page) {
+      const startIndex = (page - 1) * pageSize;
+      const next = filteredCards.slice(startIndex, startIndex + pageSize);
+      const imageUrls = next.map((card) => card.image_url || "");
+      await preloadImages(imageUrls);
+      collectionGrid.innerHTML = "";
+      const fragment = document.createDocumentFragment();
+      next.forEach((card, index) => {
+        const tile = document.createElement("div");
+        tile.className = "library-card";
+        tile.dataset.cardId = card.id;
+        const countBadge = document.createElement("div");
+        countBadge.className = "collection-count";
+        const ownedCount = getOwnedCount(card);
+        countBadge.textContent = String(ownedCount);
+        countBadge.hidden = ownedCount <= 0;
+        const img = document.createElement("img");
+        img.className = "card-image";
+        img.src = imageUrls[index] || "";
+        img.alt = card.name || "Card";
+        img.loading = page === 1 ? "eager" : "lazy";
+        img.decoding = "async";
+        revealWhenDecoded(img);
+        const name = document.createElement("h4");
+        name.textContent = card.name || "Unknown card";
+        const actions = document.createElement("div");
+        actions.className = "collection-actions";
+        actions.innerHTML = `
+          <button class="decrement" type="button" data-action="decrement">-1</button>
+          <button class="increment" type="button" data-action="increment">+1</button>
+        `;
+        tile.appendChild(countBadge);
+        tile.appendChild(img);
+        tile.appendChild(name);
+        tile.appendChild(actions);
+        updateTileControls(tile, ownedCount);
+        tile.addEventListener("click", (event) => {
+          if (event.target.closest('button[data-action="increment"], button[data-action="decrement"]')) {
+            return;
+          }
+          showCardModal(card);
+        });
+        fragment.appendChild(tile);
+      });
+      collectionGrid.appendChild(fragment);
+      const startLabel = startIndex + 1;
+      const endLabel = Math.min(startIndex + next.length, filteredCards.length);
+      resultsMeta.textContent = `${filteredCards.length} cards shown · ${startLabel}-${endLabel}`;
+      renderPagination();
+    }
+
+    function renderPagination() {
+      pagination.innerHTML = "";
+      if (totalPages <= 1) {
+        updatePaginationVisibility();
+        return;
+      }
+      const prevButton = document.createElement("button");
+      prevButton.className = "secondary";
+      prevButton.type = "button";
+      prevButton.textContent = "Previous";
+      prevButton.disabled = currentPage === 1;
+      prevButton.addEventListener("click", () => {
+        if (currentPage > 1) {
+          currentPage -= 1;
+          showLoading();
+          loadPage(currentPage).then(() => {
+            updatePaginationVisibility();
+            hideLoading();
+          });
+        }
+      });
+
+      const nextButton = document.createElement("button");
+      nextButton.className = "secondary";
+      nextButton.type = "button";
+      nextButton.textContent = "Next";
+      nextButton.disabled = currentPage === totalPages;
+      nextButton.addEventListener("click", () => {
+        if (currentPage < totalPages) {
+          currentPage += 1;
+          showLoading();
+          loadPage(currentPage).then(() => {
+            updatePaginationVisibility();
+            hideLoading();
+          });
+        }
+      });
+
+      const pageInfo = document.createElement("span");
+      pageInfo.className = "page-info";
+      pageInfo.textContent = `Page ${currentPage} of ${totalPages}`;
+
+      pagination.appendChild(prevButton);
+      pagination.appendChild(pageInfo);
+      pagination.appendChild(nextButton);
+      updatePaginationVisibility();
+    }
+
+    function showCardModal(card) {
+      cardModalImage.src = card.image_url || "";
+      cardModalImage.alt = card.name || "Card preview";
+      cardModalTitle.textContent = card.name || "Card";
+
+      cardTags.innerHTML = "";
+      const tagValues = [
+        card.type,
+        card.rarity,
+        card.set_label ? card.set_label : null,
+      ]
+        .filter(Boolean)
+        .concat(card.domains || []);
+      if (cardHasSigned(card)) {
+        tagValues.unshift("Signed");
+      }
+      tagValues.forEach((value) => {
+        const tag = document.createElement("span");
+        tag.className = "tag";
+        tag.textContent = value;
+        cardTags.appendChild(tag);
+      });
+
+      cardEnergy.textContent = card.energy ?? "-";
+      cardPower.textContent = card.power ?? "-";
+      cardMight.textContent = card.might ?? "-";
+
+      cardText.textContent = card.text || "No description available.";
+      cardArtist.textContent = card.artist ? `Artist: ${card.artist}` : "Artist: -";
+      cardSet.textContent = card.set_label ? `Set: ${card.set_label}` : "Set: -";
+      if (card.public_code) {
+        cardNumber.textContent = `Card Number: ${card.public_code}`;
+      } else if (card.collector_number) {
+        cardNumber.textContent = `Card Number: ${card.collector_number}`;
+      } else {
+        cardNumber.textContent = "Card Number: -";
+      }
+
+      cardModal.style.display = "flex";
+      cardModal.setAttribute("aria-hidden", "false");
+    }
+
+    function hideCardModal() {
+      cardModal.style.display = "none";
+      cardModal.setAttribute("aria-hidden", "true");
+      cardModalImage.removeAttribute("src");
+    }
+
+    cardModal.addEventListener("click", (event) => {
+      if (event.target === cardModal) {
+        hideCardModal();
+      }
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && cardModal.getAttribute("aria-hidden") === "false") {
+        hideCardModal();
+      }
+    });
+
+    clearFilters.addEventListener("click", () => {
+      filterState.sets.clear();
+      filterState.types.clear();
+      filterState.rarities.clear();
+      document
+        .querySelectorAll("#setFilters input, #typeFilters input, #rarityFilters input")
+        .forEach((checkbox) => {
+          checkbox.checked = false;
+        });
+      if (energyFilter) energyFilter.value = "";
+      if (powerFilter) powerFilter.value = "";
+      if (mightFilter) mightFilter.value = "";
+      updateNumericFilters();
+      updateDropdownLabel("sets");
+      updateDropdownLabel("types");
+      updateDropdownLabel("rarities");
+      setOwnershipFilter("owned", { render: false });
+      renderCards();
+    });
+
+    resetSearch.addEventListener("click", () => {
+      cardSearch.value = "";
+      renderCards();
+    });
+
+    cardSearch.addEventListener("input", () => renderCards());
+    if (energyFilter) energyFilter.addEventListener("input", () => renderCards());
+    if (powerFilter) powerFilter.addEventListener("input", () => renderCards());
+    if (mightFilter) mightFilter.addEventListener("input", () => renderCards());
+
+    ownershipFilterInputs.forEach((input) => {
+      input.addEventListener("change", () => {
+        if (input.checked) {
+          setOwnershipFilter(input.value);
+        }
+      });
+    });
+
+    collectionGrid.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-action]");
+      if (!button) return;
+      const tile = button.closest(".library-card");
+      if (!tile) return;
+      event.stopPropagation();
+      const cardId = tile.dataset.cardId;
+      const card = cardsById.get(normalize(cardId));
+      if (!card) return;
+      const currentCount = getOwnedCount(card);
+      const delta = button.dataset.action === "increment" ? 1 : -1;
+      const nextCount = Math.max(0, currentCount + delta);
+      setCardCount(card, nextCount);
+      updateTileControls(tile, nextCount);
+      if (
+        (filterState.ownership === "owned" && nextCount === 0) ||
+        (filterState.ownership === "unowned" && nextCount > 0)
+      ) {
+        renderCards();
+      }
+    });
+
+    const dropdowns = [
+      { toggle: setDropdownToggle, menu: setDropdownMenu },
+      { toggle: typeDropdownToggle, menu: typeDropdownMenu },
+      { toggle: rarityDropdownToggle, menu: rarityDropdownMenu },
+    ];
+
+    dropdowns.forEach(({ toggle, menu }) => {
+      if (!toggle || !menu) return;
+      toggle.addEventListener("click", (event) => {
+        event.stopPropagation();
+        menu.classList.toggle("open");
+      });
+    });
+
+    document.addEventListener("click", (event) => {
+      dropdowns.forEach(({ toggle, menu }) => {
+        if (!menu || !menu.classList.contains("open")) return;
+        if (
+          event.target === toggle ||
+          toggle.contains(event.target) ||
+          menu.contains(event.target)
+        ) {
+          return;
+        }
+        menu.classList.remove("open");
+      });
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      dropdowns.forEach(({ menu }) => {
+        if (menu) {
+          menu.classList.remove("open");
+        }
+      });
+    });
+
+    async function loadServerUser() {
+      try {
+        const res = await fetch("/auth/me", { method: "GET" });
+        const data = await res.json();
+        return data.user || null;
+      } catch (error) {
+        return null;
+      }
+    }
+
+    async function fetchServerCollection() {
+      if (!serverUser) return [];
+      try {
+        const res = await fetch("/collection", { method: "GET" });
+        const data = await res.json();
+        const cards = Array.isArray(data.cards) ? data.cards : [];
+        return cards.map((card) => ({
+          key: card.card_key || card.key,
+          name: card.name,
+          image_url: card.image_url,
+          count: card.count,
+        }));
+      } catch (error) {
+        return [];
+      }
+    }
+
+    async function saveServerCollection(cards) {
+      if (!serverUser) return;
+      try {
+        await fetch("/collection", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cards }),
+        });
+      } catch (error) {
+        // ignore network sync errors
+      }
+    }
+
+    async function syncCollectionFromServer() {
+      if (!serverUser) return;
+      const localCards = readSavedCards();
+      const remoteCards = await fetchServerCollection();
+      if (!remoteCards.length && localCards.length) {
+        await saveServerCollection(localCards);
+        return;
+      }
+      if (remoteCards.length) {
+        const merged = mergeCollections(localCards, remoteCards);
+        writeSavedCards(merged);
+        await saveServerCollection(merged);
+      }
+    }
+
+    async function bootCollection() {
+      buildFilters();
+      showLoading();
+      try {
+        serverUser = await loadServerUser();
+        await syncCollectionFromServer();
+      } catch (error) {
+        // ignore sync failures and fall back to local data
+      }
+      refreshOwnedCards(readSavedCards());
+      renderCards();
+    }
+
+    if (document.readyState === "loading") {
+      window.addEventListener("DOMContentLoaded", bootCollection);
+    } else {
+      bootCollection();
+    }
+  </script>
+{% endblock %}

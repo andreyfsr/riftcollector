@@ -1,0 +1,506 @@
+{% extends "base.html" %}
+
+{% block title %}Live Scan · Riftcollector{% endblock %}
+
+{% block content %}
+  <h1>Live Scan</h1>
+  <div class="meta">
+    {{ card_count }} cards indexed · {{ image_count }} images loaded
+  </div>
+
+  <div class="layout">
+    <div class="panel">
+      <h2>Show a Riftbound card</h2>
+      <video id="liveCamera" autoplay playsinline muted></video>
+      <canvas id="liveCanvas" hidden></canvas>
+      <div class="camera-actions">
+        <button id="liveStart" class="secondary" type="button">Start camera</button>
+        <button id="liveScanNow" type="button" disabled>Scan now</button>
+        <button id="liveToggleAuto" class="secondary" type="button" disabled>Auto scan</button>
+        <button id="liveStop" class="secondary" type="button" disabled>Stop</button>
+      </div>
+      <div id="liveStatus" class="result">Waiting for camera permission...</div>
+    </div>
+
+    <div class="panel">
+      <h2>Debug output</h2>
+      <div class="meta">Share this log to tweak matching settings.</div>
+      <button id="debugCopy" class="secondary" type="button">Copy debug log</button>
+      <pre id="debugOutput" class="result" style="white-space: pre-wrap;"></pre>
+    </div>
+  </div>
+
+  <div id="liveMatchModal" class="modal-backdrop" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="liveMatchTitle">
+      <img id="liveMatchImage" class="modal-preview" alt="Matched card preview" />
+      <h3 id="liveMatchTitle">Match found</h3>
+      <p id="liveMatchMeta"></p>
+      <div id="liveCandidateList" class="result" style="margin-bottom: 12px;"></div>
+
+      <div id="liveCorrection" hidden>
+        <label for="liveCorrectionInput" style="display: block; margin-bottom: 6px;">
+          Enter the correct card
+        </label>
+        <input
+          id="liveCorrectionInput"
+          type="text"
+          placeholder="Card name or Riftbound ID"
+          style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid #334155; background: #0f172a; color: #f9fafb; margin-bottom: 12px;"
+        />
+        <div class="modal-actions" style="justify-content: flex-start;">
+          <button id="liveSubmitCorrection" type="button">Submit correction</button>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button id="liveConfirmCorrect" type="button">Yes, correct</button>
+        <button id="liveConfirmWrong" class="secondary" type="button">No, wrong</button>
+        <button id="liveConfirmNone" class="secondary" type="button">No card shown</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const liveCamera = document.getElementById("liveCamera");
+    const liveCanvas = document.getElementById("liveCanvas");
+    const liveStart = document.getElementById("liveStart");
+    const liveScanNow = document.getElementById("liveScanNow");
+    const liveToggleAuto = document.getElementById("liveToggleAuto");
+    const liveStop = document.getElementById("liveStop");
+    const liveStatus = document.getElementById("liveStatus");
+    const debugOutput = document.getElementById("debugOutput");
+
+    const liveMatchModal = document.getElementById("liveMatchModal");
+    const liveMatchImage = document.getElementById("liveMatchImage");
+    const liveMatchTitle = document.getElementById("liveMatchTitle");
+    const liveMatchMeta = document.getElementById("liveMatchMeta");
+    const liveCandidateList = document.getElementById("liveCandidateList");
+    const liveConfirmCorrect = document.getElementById("liveConfirmCorrect");
+    const liveConfirmWrong = document.getElementById("liveConfirmWrong");
+    const liveConfirmNone = document.getElementById("liveConfirmNone");
+    const debugCopy = document.getElementById("debugCopy");
+    const liveCorrection = document.getElementById("liveCorrection");
+    const liveCorrectionInput = document.getElementById("liveCorrectionInput");
+    const liveSubmitCorrection = document.getElementById("liveSubmitCorrection");
+
+    let cameraStream = null;
+    let autoScanTimer = null;
+    let autoScanEnabled = true;
+    let isMatching = false;
+    let lastMatchPayload = null;
+    let lastCaptureInfo = null;
+    let lastAutoMatchId = null;
+    let lastAutoMatchCount = 0;
+    let lastPresenceLog = 0;
+    const detectCanvas = document.createElement("canvas");
+    const detectCtx = detectCanvas.getContext("2d", { willReadFrequently: true });
+    const DETECT_WIDTH = 160;
+    const DETECT_HEIGHT = 120;
+    const EDGE_THRESHOLD = 35;
+    const EDGE_DENSITY_MIN = 0.12;
+    const CENTER_EDGE_DENSITY_MIN = 0.1;
+    const BORDER_EDGE_DENSITY_MIN = 0.18;
+    const BORDER_CENTER_RATIO_MIN = 1.15;
+    const VARIANCE_MIN = 7000;
+    const PRESENCE_LOG_THROTTLE_MS = 2500;
+
+    function setStatus(message, isError = false) {
+      if (isError) {
+        liveStatus.innerHTML = `<span class="error">${message}</span>`;
+      } else {
+        liveStatus.textContent = message;
+      }
+    }
+
+    function appendDebug(entry) {
+      const timestamp = new Date().toISOString();
+      const line = `[${timestamp}] ${entry}`;
+      debugOutput.textContent = debugOutput.textContent
+        ? `${line}\n${debugOutput.textContent}`
+        : line;
+    }
+
+    async function copyDebugLog() {
+      const text = debugOutput.textContent || "";
+      if (!text) {
+        setStatus("Debug log is empty.", true);
+        return;
+      }
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(text);
+        } else {
+          const temp = document.createElement("textarea");
+          temp.value = text;
+          temp.style.position = "fixed";
+          temp.style.opacity = "0";
+          document.body.appendChild(temp);
+          temp.focus();
+          temp.select();
+          document.execCommand("copy");
+          document.body.removeChild(temp);
+        }
+        setStatus("Debug log copied to clipboard.");
+      } catch (error) {
+        setStatus("Failed to copy debug log.", true);
+        appendDebug(`copy_error: ${error?.message || error}`);
+      }
+    }
+
+    function renderCandidates(candidates) {
+      if (!Array.isArray(candidates) || !candidates.length) {
+        liveCandidateList.textContent = "No candidates returned.";
+        return;
+      }
+      liveCandidateList.innerHTML = `
+        <strong>Top candidates</strong>
+        ${candidates
+          .map(
+            (candidate) =>
+              `<div>${candidate.riftbound_id} · distance ${candidate.distance}</div>`
+          )
+          .join("")}
+      `;
+    }
+
+    function openMatchModal(payload) {
+      liveMatchImage.src = payload?.image_url || "";
+      liveMatchTitle.textContent = payload?.name || payload?.riftbound_id || "Match found";
+      liveMatchMeta.textContent = payload?.distance
+        ? `Distance: ${payload.distance}`
+        : "Distance unavailable";
+      renderCandidates(payload?.candidates || []);
+      liveCorrection.hidden = true;
+      liveCorrectionInput.value = "";
+      liveMatchModal.style.display = "flex";
+      liveMatchModal.setAttribute("aria-hidden", "false");
+    }
+
+    function closeMatchModal() {
+      liveMatchModal.style.display = "none";
+      liveMatchModal.setAttribute("aria-hidden", "true");
+      liveMatchImage.removeAttribute("src");
+      liveCorrection.hidden = true;
+      liveCorrectionInput.value = "";
+    }
+
+    async function startCamera() {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        setStatus("Camera not supported in this browser.", true);
+        return;
+      }
+      try {
+        cameraStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "environment" },
+          audio: false,
+        });
+        liveCamera.srcObject = cameraStream;
+        liveScanNow.disabled = false;
+        liveToggleAuto.disabled = false;
+        liveStop.disabled = false;
+        liveStart.disabled = true;
+        setStatus("Camera ready. Hold a card in view.");
+        if (autoScanEnabled) {
+          startAutoScan();
+        }
+      } catch (error) {
+        setStatus("Camera permission denied or unavailable.", true);
+        appendDebug(`camera_error: ${error?.message || error}`);
+      }
+    }
+
+    function stopCamera() {
+      stopAutoScan();
+      if (cameraStream) {
+        cameraStream.getTracks().forEach((track) => track.stop());
+        cameraStream = null;
+      }
+      liveCamera.srcObject = null;
+      liveScanNow.disabled = true;
+      liveToggleAuto.disabled = true;
+      liveStop.disabled = true;
+      liveStart.disabled = false;
+      setStatus("Camera stopped.");
+    }
+
+    function startAutoScan() {
+      if (!cameraStream || autoScanTimer) {
+        return;
+      }
+      autoScanEnabled = true;
+      liveToggleAuto.textContent = "Stop auto";
+      liveToggleAuto.classList.remove("secondary");
+      autoScanTimer = setInterval(() => {
+        if (!cameraStream || isMatching || liveMatchModal.getAttribute("aria-hidden") === "false") {
+          return;
+        }
+        captureAndMatch({ source: "auto" });
+      }, 2000);
+      appendDebug("auto_scan_start");
+    }
+
+    function stopAutoScan() {
+      if (autoScanTimer) {
+        clearInterval(autoScanTimer);
+        autoScanTimer = null;
+      }
+      liveToggleAuto.textContent = "Auto scan";
+      liveToggleAuto.classList.add("secondary");
+      autoScanEnabled = false;
+      appendDebug("auto_scan_stop");
+    }
+
+    function toggleAutoScan() {
+      if (autoScanTimer) {
+        stopAutoScan();
+        setStatus("Auto scan stopped.");
+      } else {
+        startAutoScan();
+        setStatus("Auto scanning... hold card steady.");
+      }
+    }
+
+    function captureAndMatch({ source = "manual" } = {}) {
+      if (!liveCamera || !cameraStream) {
+        setStatus("Start the camera before scanning.", true);
+        return;
+      }
+      const width = liveCamera.videoWidth || 1280;
+      const height = liveCamera.videoHeight || 720;
+      liveCanvas.width = width;
+      liveCanvas.height = height;
+      const ctx = liveCanvas.getContext("2d");
+      ctx.drawImage(liveCamera, 0, 0, width, height);
+      const presence = detectCardPresence();
+      if (!presence.present) {
+        setStatus("No card detected. Hold a card in view.", true);
+        logPresence(presence, source, false);
+        if (source === "auto") {
+          lastAutoMatchId = null;
+          lastAutoMatchCount = 0;
+        }
+        return;
+      }
+      logPresence(presence, source, true);
+      const dataUrl = liveCanvas.toDataURL("image/jpeg", 0.9);
+      lastCaptureInfo = { width, height, bytes: Math.round(dataUrl.length * 0.75) };
+      matchFrame(dataUrl, { source });
+    }
+
+    async function matchFrame(dataUrl, { source = "manual" } = {}) {
+      if (isMatching) return;
+      isMatching = true;
+      const startedAt = performance.now();
+      setStatus("Matching...");
+      appendDebug(
+        `capture ${lastCaptureInfo?.width || "-"}x${lastCaptureInfo?.height || "-"} ` +
+          `~${lastCaptureInfo?.bytes || "-"} bytes`
+      );
+      let response;
+      let payload;
+      try {
+        response = await fetch("/match", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image: dataUrl }),
+        });
+        payload = await response.json();
+      } catch (error) {
+        setStatus("Match request failed.", true);
+        appendDebug(`match_error: ${error?.message || error}`);
+        isMatching = false;
+        return;
+      }
+      const duration = Math.round(performance.now() - startedAt);
+      if (!response.ok) {
+        setStatus(payload?.error || "No match found.", true);
+        appendDebug(
+          `match_failed status=${response.status} duration=${duration}ms ` +
+            `payload=${JSON.stringify(payload)}`
+        );
+        if (source === "auto") {
+          lastAutoMatchId = null;
+          lastAutoMatchCount = 0;
+        }
+        isMatching = false;
+        return;
+      }
+      if (source === "auto") {
+        if (payload?.riftbound_id === lastAutoMatchId) {
+          lastAutoMatchCount += 1;
+        } else {
+          lastAutoMatchId = payload?.riftbound_id || null;
+          lastAutoMatchCount = 1;
+        }
+        appendDebug(
+          `match_ok duration=${duration}ms distance=${payload?.distance} ` +
+            `id=${payload?.riftbound_id} cache_size=${payload?.cache_size} ` +
+            `stability=${lastAutoMatchCount}`
+        );
+        if (lastAutoMatchCount < 2) {
+          setStatus("Hold steady for confirmation...");
+          isMatching = false;
+          return;
+        }
+      } else {
+        appendDebug(
+          `match_ok duration=${duration}ms distance=${payload?.distance} ` +
+            `id=${payload?.riftbound_id} cache_size=${payload?.cache_size}`
+        );
+      }
+      lastMatchPayload = payload;
+      openMatchModal(payload);
+      setStatus("Match found. Please confirm.");
+      isMatching = false;
+    }
+
+    function detectCardPresence() {
+      detectCanvas.width = DETECT_WIDTH;
+      detectCanvas.height = DETECT_HEIGHT;
+      detectCtx.drawImage(liveCamera, 0, 0, DETECT_WIDTH, DETECT_HEIGHT);
+      const imageData = detectCtx.getImageData(0, 0, DETECT_WIDTH, DETECT_HEIGHT);
+      const data = imageData.data;
+      const gray = new Float32Array(DETECT_WIDTH * DETECT_HEIGHT);
+      let sum = 0;
+      for (let i = 0, j = 0; i < data.length; i += 4, j += 1) {
+        const value = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+        gray[j] = value;
+        sum += value;
+      }
+      const mean = sum / gray.length;
+      let varianceSum = 0;
+      for (let i = 0; i < gray.length; i += 1) {
+        const delta = gray[i] - mean;
+        varianceSum += delta * delta;
+      }
+      const variance = varianceSum / gray.length;
+
+      let edgeCount = 0;
+      let centerEdgeCount = 0;
+      let borderEdgeCount = 0;
+      const centerLeft = Math.floor(DETECT_WIDTH * 0.25);
+      const centerRight = Math.floor(DETECT_WIDTH * 0.75);
+      const centerTop = Math.floor(DETECT_HEIGHT * 0.25);
+      const centerBottom = Math.floor(DETECT_HEIGHT * 0.75);
+      const borderLeft = Math.floor(DETECT_WIDTH * 0.1);
+      const borderRight = Math.floor(DETECT_WIDTH * 0.9);
+      const borderTop = Math.floor(DETECT_HEIGHT * 0.1);
+      const borderBottom = Math.floor(DETECT_HEIGHT * 0.9);
+      for (let y = 1; y < DETECT_HEIGHT - 1; y += 1) {
+        for (let x = 1; x < DETECT_WIDTH - 1; x += 1) {
+          const idx = y * DETECT_WIDTH + x;
+          const gx = gray[idx + 1] - gray[idx - 1];
+          const gy = gray[idx + DETECT_WIDTH] - gray[idx - DETECT_WIDTH];
+          const magnitude = Math.abs(gx) + Math.abs(gy);
+          if (magnitude > EDGE_THRESHOLD) {
+            edgeCount += 1;
+            if (
+              x >= centerLeft &&
+              x < centerRight &&
+              y >= centerTop &&
+              y < centerBottom
+            ) {
+              centerEdgeCount += 1;
+            }
+            if (x < borderLeft || x >= borderRight || y < borderTop || y >= borderBottom) {
+              borderEdgeCount += 1;
+            }
+          }
+        }
+      }
+      const totalPixels = (DETECT_WIDTH - 2) * (DETECT_HEIGHT - 2);
+      const centerPixels =
+        (centerRight - centerLeft) * (centerBottom - centerTop);
+      const borderPixels =
+        totalPixels - (borderRight - borderLeft) * (borderBottom - borderTop);
+      const edgeDensity = edgeCount / totalPixels;
+      const centerEdgeDensity = centerEdgeCount / centerPixels;
+      const borderEdgeDensity = borderEdgeCount / borderPixels;
+      const present =
+        variance >= VARIANCE_MIN &&
+        edgeDensity >= EDGE_DENSITY_MIN &&
+        centerEdgeDensity >= CENTER_EDGE_DENSITY_MIN &&
+        borderEdgeDensity >= BORDER_EDGE_DENSITY_MIN &&
+        borderEdgeDensity >= centerEdgeDensity * BORDER_CENTER_RATIO_MIN;
+      return {
+        present,
+        variance,
+        edgeDensity,
+        centerEdgeDensity,
+        borderEdgeDensity,
+      };
+    }
+
+    function logPresence(metrics, source, present) {
+      const now = Date.now();
+      if (!present && now - lastPresenceLog < PRESENCE_LOG_THROTTLE_MS) {
+        return;
+      }
+      lastPresenceLog = now;
+      appendDebug(
+        `card_detect ${present ? "yes" : "no"} source=${source} ` +
+          `var=${metrics.variance.toFixed(1)} ` +
+          `edge=${metrics.edgeDensity.toFixed(3)} ` +
+          `center=${metrics.centerEdgeDensity.toFixed(3)} ` +
+          `border=${metrics.borderEdgeDensity.toFixed(3)}`
+      );
+    }
+
+    liveConfirmCorrect.addEventListener("click", () => {
+      appendDebug(`confirmed_correct id=${lastMatchPayload?.riftbound_id}`);
+      closeMatchModal();
+      setStatus("Confirmed. Ready for next card.");
+    });
+
+    liveConfirmWrong.addEventListener("click", () => {
+      liveCorrection.hidden = false;
+      liveCorrectionInput.focus();
+    });
+
+    liveConfirmNone.addEventListener("click", () => {
+      appendDebug(`no_card_shown match_payload=${JSON.stringify(lastMatchPayload)}`);
+      closeMatchModal();
+      setStatus("No card shown logged. Ready for next card.");
+    });
+
+    liveSubmitCorrection.addEventListener("click", () => {
+      const correction = liveCorrectionInput.value.trim();
+      if (!correction) {
+        setStatus("Please enter the correct card name or ID.", true);
+        return;
+      }
+      appendDebug(
+        `corrected_to=${correction} match_payload=${JSON.stringify(lastMatchPayload)}`
+      );
+      closeMatchModal();
+      setStatus("Correction logged. Ready for next card.");
+    });
+
+    liveMatchModal.addEventListener("click", (event) => {
+      if (event.target === liveMatchModal) {
+        closeMatchModal();
+      }
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && liveMatchModal.getAttribute("aria-hidden") === "false") {
+        closeMatchModal();
+      }
+    });
+
+    liveStart.addEventListener("click", startCamera);
+    liveStop.addEventListener("click", stopCamera);
+    liveScanNow.addEventListener("click", () => captureAndMatch({ source: "manual" }));
+    liveToggleAuto.addEventListener("click", toggleAutoScan);
+    debugCopy.addEventListener("click", copyDebugLog);
+
+    window.addEventListener("load", () => {
+      setStatus("Allow camera access, then show a Riftbound card.");
+      startCamera();
+    });
+
+    window.addEventListener("beforeunload", () => {
+      stopCamera();
+    });
+  </script>
+{% endblock %}

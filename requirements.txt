@@ -1,0 +1,10 @@
+Flask
+Flask-Compress
+numpy
+opencv-python
+Pillow
+ImageHash
+google-auth
+requests
+python-dotenv
+

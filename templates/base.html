@@ -1,0 +1,732 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{% block title %}Riftcollector{% endblock %}</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      body {
+        font-family: Arial, sans-serif;
+        background: #111827;
+        color: #f9fafb;
+        margin: 0;
+      }
+      [hidden] {
+        display: none !important;
+      }
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+      .top-nav {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 16px 24px;
+        background: #0f172a;
+        border-bottom: 1px solid #1f2937;
+      }
+      .nav-left {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+      }
+      .brand {
+        font-weight: 700;
+        letter-spacing: 0.4px;
+      }
+      .nav-links {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+      }
+      .nav-links a {
+        padding: 8px 12px;
+        border-radius: 999px;
+        color: #cbd5f5;
+        background: transparent;
+        transition: background 0.2s ease;
+        line-height: 1;
+        height: 34px;
+        display: inline-flex;
+        align-items: center;
+      }
+      .nav-dropdown {
+        position: relative;
+      }
+      .nav-dropdown-toggle {
+        padding: 8px 12px;
+        border-radius: 999px;
+        color: #cbd5f5;
+        background: transparent;
+        border: none;
+        cursor: pointer;
+        font: inherit;
+        margin: 0;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        transition: background 0.2s ease;
+        line-height: 1;
+        height: 34px;
+      }
+      .nav-dropdown-toggle:hover,
+      .nav-dropdown:focus-within .nav-dropdown-toggle {
+        background: #1f2937;
+      }
+      .nav-dropdown-toggle.active {
+        background: #2563eb;
+        color: #fff;
+      }
+      .nav-dropdown-menu {
+        position: absolute;
+        top: calc(100% + 10px);
+        left: 0;
+        min-width: 180px;
+        background: #0f172a;
+        border: 1px solid #1f2937;
+        border-radius: 12px;
+        padding: 8px;
+        display: none;
+        z-index: 5;
+        box-shadow: 0 16px 30px rgba(0, 0, 0, 0.35);
+      }
+      .nav-dropdown-menu a {
+        display: block;
+        padding: 8px 10px;
+        border-radius: 8px;
+        color: #cbd5f5;
+        background: transparent;
+      }
+      .nav-dropdown-menu a:hover {
+        background: #1f2937;
+      }
+      .nav-dropdown:hover .nav-dropdown-menu,
+      .nav-dropdown:focus-within .nav-dropdown-menu {
+        display: block;
+      }
+      .nav-links a:hover {
+        background: #1f2937;
+      }
+      .nav-links a.active {
+        background: #2563eb;
+        color: #fff;
+      }
+      .nav-right {
+        display: flex;
+        align-items: center;
+      }
+      .nav-profile {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        color: #cbd5f5;
+        transition: background 0.2s ease;
+      }
+      .nav-profile:hover {
+        background: #1f2937;
+      }
+      .nav-profile.active {
+        background: #2563eb;
+        color: #fff;
+      }
+      .nav-profile-avatar {
+        width: 32px;
+        height: 32px;
+        border-radius: 999px;
+        object-fit: cover;
+        display: block;
+      }
+      .nav-profile-initials {
+        width: 32px;
+        height: 32px;
+        border-radius: 999px;
+        display: grid;
+        place-items: center;
+        background: #1e3a8a;
+        color: #fff;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.4px;
+      }
+      .page {
+        padding: 24px;
+      }
+      h1 {
+        margin-bottom: 4px;
+      }
+      .meta {
+        color: #9ca3af;
+        margin-bottom: 24px;
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 24px;
+        align-items: start;
+      }
+      .panel {
+        background: #1f2937;
+        border-radius: 12px;
+        padding: 16px;
+      }
+      .camera-block {
+        margin-top: 16px;
+      }
+      .camera-actions {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .camera-actions button {
+        margin-top: 10px;
+      }
+      #cameraPreview {
+        max-height: 360px;
+        object-fit: cover;
+      }
+      video,
+      canvas,
+      img {
+        width: 100%;
+        border-radius: 12px;
+        background: #0f172a;
+        display: block;
+      }
+      .card-image {
+        visibility: hidden;
+      }
+      .card-image.is-ready {
+        visibility: visible;
+      }
+      button {
+        margin-top: 12px;
+        padding: 10px 16px;
+        border-radius: 8px;
+        border: none;
+        background: #2563eb;
+        color: white;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      button:disabled {
+        background: #374151;
+        cursor: not-allowed;
+      }
+      .result {
+        margin-top: 12px;
+        padding: 12px;
+        border-radius: 8px;
+        background: #0f172a;
+      }
+      .result strong {
+        display: block;
+        margin-bottom: 6px;
+      }
+      .pending-matches {
+        margin-top: 16px;
+      }
+      .pending-header-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .pending-bulk-actions {
+        display: flex;
+        gap: 8px;
+        margin-left: auto;
+      }
+      .pending-bulk-actions button {
+        margin-top: 0;
+      }
+      .saved-matches {
+        margin-top: 16px;
+      }
+      .saved-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+        gap: 10px;
+        margin-top: 10px;
+      }
+      .saved-card {
+        background: #0f172a;
+        border-radius: 10px;
+        padding: 8px;
+        text-align: center;
+        font-size: 12px;
+        position: relative;
+      }
+      .saved-card img {
+        width: 100%;
+        border-radius: 6px;
+        margin-bottom: 6px;
+      }
+      .saved-count {
+        position: absolute;
+        top: 6px;
+        right: 6px;
+        background: #2563eb;
+        color: #fff;
+        border-radius: 999px;
+        font-size: 11px;
+        padding: 2px 6px;
+        min-width: 20px;
+        text-align: center;
+      }
+      .saved-actions {
+        display: flex;
+        gap: 6px;
+        justify-content: center;
+        margin-top: 6px;
+      }
+      .saved-actions button {
+        margin-top: 0;
+        padding: 4px 8px;
+        font-size: 12px;
+        background: #374151;
+      }
+      .saved-actions .increment {
+        background: #2563eb;
+      }
+      .saved-actions .decrement {
+        background: #1f2937;
+      }
+      .modal-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(15, 23, 42, 0.65);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        z-index: 10;
+      }
+      .modal {
+        background: #1f2937;
+        border-radius: 12px;
+        padding: 20px;
+        width: min(420px, 100%);
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.4);
+      }
+      .modal h3 {
+        margin: 0 0 8px;
+      }
+      .modal p {
+        margin: 0 0 16px;
+        color: #d1d5db;
+      }
+      .modal-preview {
+        width: 100%;
+        border-radius: 10px;
+        background: #0f172a;
+        margin-bottom: 12px;
+      }
+      .modal-actions {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+      }
+      .modal-actions button {
+        margin-top: 0;
+      }
+      .secondary {
+        background: #374151;
+      }
+      .error {
+        color: #fca5a5;
+      }
+      .profile-card {
+        background: #1f2937;
+        border-radius: 12px;
+        padding: 20px;
+      }
+      .profile-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 16px;
+        margin-top: 16px;
+      }
+      .auth-grid {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-top: 12px;
+      }
+      .auth-user {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-top: 12px;
+      }
+      .auth-user img {
+        width: 40px;
+        height: 40px;
+        border-radius: 999px;
+        object-fit: cover;
+      }
+      .auth-note {
+        margin-top: 8px;
+        color: #9ca3af;
+        font-size: 12px;
+      }
+      .locked {
+        opacity: 0.6;
+      }
+      .stat-card {
+        background: #0f172a;
+        border-radius: 10px;
+        padding: 14px;
+      }
+      .stat-card span {
+        color: #9ca3af;
+        display: block;
+        font-size: 12px;
+      }
+      .stat-card strong {
+        font-size: 20px;
+      }
+      .empty-state {
+        padding: 16px;
+        border-radius: 10px;
+        background: #0f172a;
+        color: #cbd5f5;
+      }
+      .library-layout {
+        display: grid;
+        grid-template-columns: minmax(220px, 280px) 1fr;
+        gap: 20px;
+      }
+      .filter-panel {
+        background: #1f2937;
+        border-radius: 12px;
+        padding: 16px;
+        position: sticky;
+        top: 24px;
+        height: fit-content;
+      }
+      .filter-group + .filter-group {
+        margin-top: 16px;
+      }
+      .filter-group h3 {
+        margin: 0 0 8px;
+        font-size: 14px;
+        color: #e2e8f0;
+      }
+      .filter-options {
+        display: grid;
+        gap: 6px;
+        max-height: 220px;
+        overflow: auto;
+        padding-right: 4px;
+      }
+      .dropdown {
+        position: relative;
+      }
+      .dropdown-toggle {
+        width: 100%;
+        margin-top: 0;
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: #0f172a;
+        border: 1px solid #334155;
+        color: #f9fafb;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+      }
+      .dropdown-toggle span {
+        color: #9ca3af;
+        font-size: 12px;
+      }
+      .dropdown-menu {
+        position: absolute;
+        top: calc(100% + 8px);
+        left: 0;
+        right: 0;
+        background: #0f172a;
+        border: 1px solid #1f2937;
+        border-radius: 12px;
+        padding: 10px;
+        display: none;
+        z-index: 5;
+        box-shadow: 0 16px 30px rgba(0, 0, 0, 0.35);
+      }
+      .dropdown-menu.open {
+        display: block;
+      }
+      .filter-options label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        color: #cbd5f5;
+      }
+      .filter-search {
+        width: 100%;
+        margin-bottom: 12px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid #334155;
+        background: #0f172a;
+        color: #f9fafb;
+      }
+      .filter-input {
+        display: grid;
+        gap: 6px;
+        font-size: 12px;
+        color: #cbd5f5;
+      }
+      .filter-input span {
+        color: #9ca3af;
+      }
+      .filter-input input {
+        width: 100%;
+        padding: 8px 10px;
+        border-radius: 10px;
+        border: 1px solid #334155;
+        background: #0f172a;
+        color: #f9fafb;
+      }
+      .filter-input + .filter-input {
+        margin-top: 10px;
+      }
+      .filter-actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      .library-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+        gap: 16px;
+      }
+      .library-card {
+        background: #0f172a;
+        border-radius: 12px;
+        padding: 10px;
+        cursor: pointer;
+        position: relative;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+      }
+      .library-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 12px 28px rgba(0, 0, 0, 0.25);
+      }
+      .library-card img {
+        border-radius: 10px;
+        margin-bottom: 8px;
+      }
+      .library-card h4 {
+        margin: 0;
+        font-size: 14px;
+      }
+      .library-card span {
+        font-size: 12px;
+        color: #9ca3af;
+      }
+      .collection-count {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        background: #2563eb;
+        color: #fff;
+        border-radius: 999px;
+        font-size: 11px;
+        padding: 2px 6px;
+        min-width: 20px;
+        text-align: center;
+        z-index: 1;
+      }
+      .collection-actions {
+        display: flex;
+        gap: 6px;
+        justify-content: center;
+        margin-top: 6px;
+      }
+      .collection-actions button {
+        margin-top: 0;
+        padding: 4px 8px;
+        font-size: 12px;
+        background: #374151;
+      }
+      .collection-actions .increment {
+        background: #2563eb;
+      }
+      .collection-actions .decrement {
+        background: #1f2937;
+      }
+      .card-modal {
+        width: min(900px, 100%);
+        display: grid;
+        grid-template-columns: minmax(240px, 320px) 1fr;
+        gap: 20px;
+      }
+      .card-modal img {
+        width: 100%;
+        border-radius: 12px;
+        background: #0f172a;
+      }
+      .card-info h3 {
+        margin: 0 0 6px;
+      }
+      .tag-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+      .tag {
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        background: #1e293b;
+        color: #e2e8f0;
+      }
+      .stat-row {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(80px, 1fr));
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+      .stat-tile {
+        background: #0f172a;
+        border-radius: 10px;
+        padding: 10px;
+        text-align: center;
+      }
+      .stat-tile span {
+        display: block;
+        color: #94a3b8;
+        font-size: 12px;
+      }
+      .stat-tile strong {
+        font-size: 18px;
+      }
+      .card-detail {
+        color: #cbd5f5;
+        margin-bottom: 12px;
+      }
+      .card-detail small {
+        color: #9ca3af;
+        display: block;
+        margin-bottom: 4px;
+      }
+      .pagination {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        margin-top: 16px;
+      }
+      .pagination button {
+        margin-top: 0;
+      }
+      .page-info {
+        color: #9ca3af;
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-left">
+        <div class="brand">Riftcollector</div>
+        <div class="nav-links">
+          <a href="/" class="{% if active_page == 'scan' %}active{% endif %}">Scan</a>
+          <a href="/live-scan" class="{% if active_page == 'live' %}active{% endif %}">
+            Live Scan
+          </a>
+          <div class="nav-dropdown">
+            <button
+              class="nav-dropdown-toggle {% if active_page == 'gallery' or active_page == 'library' %}active{% endif %}"
+              type="button"
+            >
+              Cards
+            </button>
+            <div class="nav-dropdown-menu">
+              <a href="/library" class="{% if active_page == 'library' %}active{% endif %}">
+                Library
+              </a>
+              <a href="/cards" class="{% if active_page == 'gallery' %}active{% endif %}">
+                My Collection
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="nav-right">
+        <a href="/profile" class="nav-profile {% if active_page == 'profile' %}active{% endif %}">
+          <span class="nav-profile-label">Sign in</span>
+          <img class="nav-profile-avatar" alt="Profile" hidden />
+          <span class="nav-profile-initials" hidden></span>
+        </a>
+      </div>
+    </nav>
+    <main class="page">{% block content %}{% endblock %}</main>
+    <script>
+      const profileLink = document.querySelector(".nav-profile");
+      const profileLabel = profileLink?.querySelector(".nav-profile-label");
+      const profileAvatar = profileLink?.querySelector(".nav-profile-avatar");
+      const profileInitials = profileLink?.querySelector(".nav-profile-initials");
+
+      function getInitials(user) {
+        const name = (user?.name || "").trim();
+        if (name) {
+          const parts = name.split(/\s+/).filter(Boolean);
+          const first = parts[0]?.[0] || "";
+          const last = parts.length > 1 ? parts[parts.length - 1][0] : "";
+          return (first + last).toUpperCase() || "U";
+        }
+        const email = (user?.email || "").trim();
+        if (email) {
+          return email[0]?.toUpperCase() || "U";
+        }
+        return "U";
+      }
+
+      async function loadNavProfile() {
+        if (!profileLink || !profileLabel || !profileAvatar || !profileInitials) {
+          return;
+        }
+        try {
+          const res = await fetch("/auth/me", { method: "GET" });
+          const data = await res.json();
+          const user = data?.user;
+          if (user) {
+            if (user.picture) {
+              profileAvatar.src = user.picture;
+              profileAvatar.alt = user.name || "Profile";
+              profileAvatar.hidden = false;
+              profileInitials.hidden = true;
+              profileLabel.hidden = true;
+              return;
+            }
+            profileInitials.textContent = getInitials(user);
+            profileInitials.hidden = false;
+            profileAvatar.hidden = true;
+            profileLabel.hidden = true;
+            return;
+          }
+        } catch (error) {
+          // Ignore errors and keep the sign-in label.
+        }
+        profileAvatar.hidden = true;
+        profileInitials.hidden = true;
+        profileLabel.hidden = false;
+        profileLabel.textContent = "Sign in";
+      }
+
+      loadNavProfile();
+    </script>
+  </body>
+</html>

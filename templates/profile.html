@@ -1,0 +1,276 @@
+{% extends "base.html" %}
+
+{% block title %}Profile · Riftcollector{% endblock %}
+
+{% block content %}
+  <h1>Profile</h1>
+  <div class="meta">Your Riftbound collection at a glance.</div>
+
+  <div class="profile-card" id="authCard">
+    <h2 id="authTitle">Sign in</h2>
+    <p>Use Google to access your collector profile.</p>
+    <div class="auth-grid">
+      <div id="googleSignIn"></div>
+      <button id="googleSignOut" class="secondary" type="button">Sign out</button>
+    </div>
+    <div class="auth-user" id="authUser" hidden></div>
+    <div class="auth-note" id="authNote">
+      Authorized JavaScript origin: <code>{{ app_origin }}</code>
+    </div>
+  </div>
+
+  <div class="profile-card locked" id="profileStats" style="display: none;">
+    <h2>Collector overview</h2>
+    <p>Track the cards you have scanned and saved across your sessions.</p>
+
+    <div class="profile-grid">
+      <div class="stat-card">
+        <span>Saved cards (unique)</span>
+        <strong id="savedUnique">0</strong>
+      </div>
+      <div class="stat-card">
+        <span>Saved cards (total)</span>
+        <strong id="savedTotal">0</strong>
+      </div>
+      <div class="stat-card">
+        <span>Cards indexed</span>
+        <strong>{{ card_count }}</strong>
+      </div>
+      <div class="stat-card">
+        <span>Images available</span>
+        <strong>{{ image_count }}</strong>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script>
+    const clientId = "{{ google_client_id }}";
+    const storageKey = "riftbound_saved_cards";
+    const googleSignIn = document.getElementById("googleSignIn");
+    const googleSignOut = document.getElementById("googleSignOut");
+    const authUser = document.getElementById("authUser");
+    const authNote = document.getElementById("authNote");
+    const profileStats = document.getElementById("profileStats");
+    const authTitle = document.getElementById("authTitle");
+
+    const savedUnique = document.getElementById("savedUnique");
+    const savedTotal = document.getElementById("savedTotal");
+
+    function readSavedCards() {
+      const raw = localStorage.getItem(storageKey);
+      if (!raw) {
+        return [];
+      }
+      try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (error) {
+        return [];
+      }
+    }
+
+    function updateStats(cardsOverride) {
+      const savedCards = Array.isArray(cardsOverride) ? cardsOverride : readSavedCards();
+      const total = savedCards.reduce((sum, card) => sum + (card.count || 0), 0);
+      savedUnique.textContent = String(savedCards.length);
+      savedTotal.textContent = String(total);
+    }
+
+    function mergeCollections(localCards, remoteCards) {
+      const merged = new Map();
+      (remoteCards || []).forEach((card) => {
+        if (!card || !card.key) return;
+        merged.set(card.key, { ...card });
+      });
+      (localCards || []).forEach((card) => {
+        if (!card || !card.key) return;
+        const existing = merged.get(card.key);
+        if (!existing) {
+          merged.set(card.key, { ...card });
+          return;
+        }
+        const localCount = Number(card.count) || 1;
+        const remoteCount = Number(existing.count) || 1;
+        merged.set(card.key, {
+          ...existing,
+          ...card,
+          count: Math.max(localCount, remoteCount),
+        });
+      });
+      return Array.from(merged.values());
+    }
+
+    async function fetchServerCollection() {
+      try {
+        const res = await fetch("/collection", { method: "GET" });
+        const data = await res.json();
+        const cards = Array.isArray(data.cards) ? data.cards : [];
+        return cards.map((card) => ({
+          key: card.card_key || card.key,
+          name: card.name,
+          image_url: card.image_url,
+          count: card.count,
+        }));
+      } catch (error) {
+        return [];
+      }
+    }
+
+    async function saveServerCollection(cards) {
+      try {
+        await fetch("/collection", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cards }),
+        });
+      } catch (error) {
+        // ignore network sync errors
+      }
+    }
+
+    function decodeJwt(token) {
+      const payload = token.split(".")[1];
+      if (!payload) {
+        return null;
+      }
+      const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
+      const decoded = atob(normalized.padEnd(normalized.length + (4 - (normalized.length % 4)) % 4, "="));
+      return JSON.parse(decoded);
+    }
+
+    function setLoggedOutState() {
+      profileStats.style.display = "none";
+      profileStats.classList.add("locked");
+      googleSignOut.style.display = "none";
+      googleSignIn.style.display = "";
+      authUser.hidden = true;
+      authUser.innerHTML = "";
+      if (authTitle) {
+        authTitle.textContent = "Sign in";
+      }
+    }
+
+    function setLoggedInState(user) {
+      profileStats.style.display = "block";
+      profileStats.classList.remove("locked");
+      googleSignOut.style.display = "inline-flex";
+      googleSignIn.style.display = "none";
+      authUser.hidden = false;
+      authUser.innerHTML = `
+        <img src="${user.picture || ""}" alt="Profile" />
+        <div>
+          <div><strong>${user.name || "Signed in"}</strong></div>
+          <div class="meta">${user.email || ""}</div>
+        </div>
+      `;
+      if (authTitle) {
+        authTitle.textContent = "Signed in";
+      }
+    }
+
+    async function handleCredentialResponse(response) {
+      if (!response || !response.credential) {
+        authNote.textContent = "Google sign-in failed. Try again.";
+        return;
+      }
+      const localUser = decodeJwt(response.credential);
+      if (!localUser) {
+        authNote.textContent = "Unable to read Google profile data.";
+        return;
+      }
+      authNote.textContent = "Verifying with server...";
+      try {
+        const res = await fetch("/auth/google", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ credential: response.credential }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          authNote.textContent = data.error || "Unable to sign in.";
+          setLoggedOutState();
+          return;
+        }
+        authNote.textContent = "Signed in.";
+        setLoggedInState(data.user || localUser);
+        const localCards = readSavedCards();
+        const remoteCards = await fetchServerCollection();
+        if (!remoteCards.length && localCards.length) {
+          await saveServerCollection(localCards);
+          updateStats(localCards);
+          return;
+        }
+        const merged = mergeCollections(localCards, remoteCards);
+        localStorage.setItem(storageKey, JSON.stringify(merged));
+        await saveServerCollection(merged);
+        updateStats(merged);
+      } catch (error) {
+        authNote.textContent = "Network error. Try again.";
+        setLoggedOutState();
+      }
+    }
+
+    async function loadServerUser() {
+      try {
+        const res = await fetch("/auth/me", { method: "GET" });
+        const data = await res.json();
+        return data.user || null;
+      } catch (error) {
+        return null;
+      }
+    }
+
+    async function initializeGoogleAuth() {
+      if (!clientId) {
+        authNote.textContent = "Set GOOGLE_CLIENT_ID to enable Google sign-in.";
+        googleSignIn.textContent = "Google sign-in unavailable.";
+        setLoggedOutState();
+        return;
+      }
+      google.accounts.id.initialize({
+        client_id: clientId,
+        callback: handleCredentialResponse,
+      });
+      google.accounts.id.renderButton(googleSignIn, {
+        theme: "outline",
+        size: "large",
+        text: "signin_with",
+        shape: "pill",
+      });
+      const serverUser = await loadServerUser();
+      if (serverUser) {
+        setLoggedInState(serverUser);
+        const localCards = readSavedCards();
+        const remoteCards = await fetchServerCollection();
+        if (!remoteCards.length && localCards.length) {
+          await saveServerCollection(localCards);
+          updateStats(localCards);
+          return;
+        }
+        const merged = mergeCollections(localCards, remoteCards);
+        localStorage.setItem(storageKey, JSON.stringify(merged));
+        await saveServerCollection(merged);
+        updateStats(merged);
+        return;
+      }
+      setLoggedOutState();
+    }
+
+    googleSignOut.addEventListener("click", async () => {
+      try {
+        await fetch("/auth/logout", { method: "POST" });
+      } catch (error) {
+        // ignore network errors for local sign-out
+      }
+      authNote.textContent = "Signed out.";
+      setLoggedOutState();
+    });
+
+    if (typeof google !== "undefined") {
+      initializeGoogleAuth();
+    } else {
+      window.addEventListener("load", initializeGoogleAuth);
+    }
+  </script>
+{% endblock %}

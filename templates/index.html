@@ -1,0 +1,514 @@
+{% extends "base.html" %}
+
+{% block title %}Riftbound Card Scanner{% endblock %}
+
+{% block content %}
+  <h1>Riftbound Card Scanner</h1>
+  <div class="meta">
+    {{ card_count }} cards indexed · {{ image_count }} images loaded
+  </div>
+
+  <div class="layout">
+    <div class="panel">
+      <h2>Upload Photo</h2>
+      <input id="photoInput" type="file" accept="image/*" hidden />
+      <button id="selectPhoto">Select Photo</button>
+      <div class="camera-block">
+        <h2>Scan with Camera</h2>
+        <video id="cameraPreview" autoplay playsinline muted></video>
+        <canvas id="cameraCanvas" hidden></canvas>
+        <div class="camera-actions">
+          <button id="startCamera" class="secondary" type="button">Start camera</button>
+          <button id="capturePhoto" type="button" disabled>Capture</button>
+        <button id="autoScan" class="secondary" type="button" disabled>Auto scan</button>
+          <button id="stopCamera" class="secondary" type="button" disabled>Stop</button>
+        </div>
+      </div>
+      <div id="status" class="result">Select a photo to start.</div>
+      <div class="pending-matches">
+        <div class="pending-header-row">
+          <div style="display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;">
+            <strong>Pending matches</strong>
+            <span id="pendingCountMeta" class="meta" style="margin: 0;"></span>
+          </div>
+          <div class="pending-bulk-actions">
+            <button id="pendingDeleteAll" class="secondary" type="button">Delete all</button>
+            <button id="pendingSaveAll" type="button">Save all</button>
+          </div>
+        </div>
+        <div id="pendingEmpty" class="empty-state">No pending matches yet.</div>
+        <div id="pendingGrid" class="saved-grid pending-grid"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const photoInput = document.getElementById("photoInput");
+    const statusBox = document.getElementById("status");
+    const selectButton = document.getElementById("selectPhoto");
+    const cameraPreview = document.getElementById("cameraPreview");
+    const cameraCanvas = document.getElementById("cameraCanvas");
+    const startCameraButton = document.getElementById("startCamera");
+    const capturePhotoButton = document.getElementById("capturePhoto");
+    const autoScanButton = document.getElementById("autoScan");
+    const stopCameraButton = document.getElementById("stopCamera");
+    const pendingGrid = document.getElementById("pendingGrid");
+    const pendingEmpty = document.getElementById("pendingEmpty");
+    const pendingCountMeta = document.getElementById("pendingCountMeta");
+    const pendingSaveAll = document.getElementById("pendingSaveAll");
+    const pendingDeleteAll = document.getElementById("pendingDeleteAll");
+    const storageKey = "riftbound_saved_cards";
+    const savedCards = new Map();
+    const pendingStorageKey = "riftbound_pending_cards";
+    const pendingCards = new Map();
+    let selectedDataUrl = null;
+    let serverUser = null;
+    let cameraStream = null;
+    let autoScanTimer = null;
+    let isScanning = false;
+
+    function setStatus(message, isError = false) {
+      if (isError) {
+        statusBox.innerHTML = `<span class="error">${message}</span>`;
+      } else {
+        statusBox.textContent = message;
+      }
+    }
+
+    function readSavedCards() {
+      const raw = localStorage.getItem(storageKey);
+      if (!raw) {
+        return [];
+      }
+      try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (error) {
+        return [];
+      }
+    }
+
+    function readPendingCards() {
+      const raw = localStorage.getItem(pendingStorageKey);
+      if (!raw) {
+        return [];
+      }
+      try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (error) {
+        return [];
+      }
+    }
+
+    function persistSavedCards() {
+      const payload = Array.from(savedCards.values());
+      localStorage.setItem(storageKey, JSON.stringify(payload));
+    }
+
+    function persistPendingCards() {
+      const payload = Array.from(pendingCards.values());
+      localStorage.setItem(pendingStorageKey, JSON.stringify(payload));
+    }
+
+    function writeSavedCards(cards) {
+      const payload = Array.isArray(cards) ? cards : [];
+      localStorage.setItem(storageKey, JSON.stringify(payload));
+    }
+
+    function writePendingCards(cards) {
+      const payload = Array.isArray(cards) ? cards : [];
+      localStorage.setItem(pendingStorageKey, JSON.stringify(payload));
+    }
+
+    function mergeCollections(localCards, remoteCards) {
+      const merged = new Map();
+      (remoteCards || []).forEach((card) => {
+        if (!card || !card.key) return;
+        merged.set(card.key, { ...card });
+      });
+      (localCards || []).forEach((card) => {
+        if (!card || !card.key) return;
+        const existing = merged.get(card.key);
+        if (!existing) {
+          merged.set(card.key, { ...card });
+          return;
+        }
+        const localCount = Number(card.count) || 1;
+        const remoteCount = Number(existing.count) || 1;
+        merged.set(card.key, {
+          ...existing,
+          ...card,
+          count: Math.max(localCount, remoteCount),
+        });
+      });
+      return Array.from(merged.values());
+    }
+
+    function updatePendingEmptyState() {
+      pendingEmpty.style.display = pendingCards.size ? "none" : "block";
+    }
+
+    function updatePendingCounts() {
+      const uniqueCount = pendingCards.size;
+      let totalCount = 0;
+      pendingCards.forEach((card) => {
+        totalCount += Number(card?.count) || 0;
+      });
+      if (pendingCountMeta) {
+        pendingCountMeta.textContent = uniqueCount
+          ? `${uniqueCount} unique · ${totalCount} total`
+          : "0 pending";
+      }
+    }
+
+    function renderPendingCard(cardData) {
+      const card = document.createElement("div");
+      card.className = "saved-card pending-card";
+      card.dataset.cardKey = cardData.key;
+      const img = document.createElement("img");
+      img.src = cardData.image_url;
+      img.alt = cardData.name || "Pending match";
+      const count = document.createElement("div");
+      count.className = "saved-count";
+      count.textContent = String(cardData.count || 1);
+      const label = document.createElement("div");
+      label.textContent = cardData.name || "Pending match";
+      const actions = document.createElement("div");
+      actions.className = "saved-actions";
+      actions.innerHTML = `
+        <button class="secondary" type="button" data-action="delete">Delete</button>
+        <button class="increment" type="button" data-action="save">Save</button>
+      `;
+      card.appendChild(count);
+      card.appendChild(img);
+      card.appendChild(label);
+      card.appendChild(actions);
+      pendingGrid.prepend(card);
+    }
+
+    function hydrateSavedCards() {
+      const items = readSavedCards();
+      items.forEach((item) => {
+        if (!item || !item.key) return;
+        savedCards.set(item.key, item);
+      });
+    }
+
+    function hydratePendingCards() {
+      const items = readPendingCards();
+      items.forEach((item) => {
+        if (!item || !item.key) return;
+        pendingCards.set(item.key, item);
+        renderPendingCard(item);
+      });
+      updatePendingEmptyState();
+      updatePendingCounts();
+    }
+
+    function addToPending(payload) {
+      const key = payload.riftbound_id || payload.name || payload.image_url;
+      const name = payload.name || payload.riftbound_id || "Matched card";
+      const imageUrl = payload.image_url;
+      const existing = pendingCards.get(key);
+      if (existing) {
+        existing.count = (Number(existing.count) || 1) + 1;
+        const card = pendingGrid.querySelector(
+          `[data-card-key="${CSS.escape(key)}"]`
+        );
+        const countEl = card?.querySelector(".saved-count");
+        if (countEl) {
+          countEl.textContent = String(existing.count);
+        }
+      } else {
+        const cardData = {
+          key,
+          name,
+          image_url: imageUrl,
+          count: 1,
+        };
+        pendingCards.set(key, cardData);
+        renderPendingCard(cardData);
+      }
+      persistPendingCards();
+      updatePendingEmptyState();
+      updatePendingCounts();
+    }
+
+    function movePendingToSaved(cardData) {
+      const key = cardData.key;
+      const existing = savedCards.get(key);
+      if (existing) {
+        existing.count = (Number(existing.count) || 1) + (Number(cardData.count) || 1);
+      } else {
+        const nextCard = {
+          key,
+          name: cardData.name,
+          image_url: cardData.image_url,
+          count: Number(cardData.count) || 1,
+        };
+        savedCards.set(key, nextCard);
+      }
+      persistSavedCards();
+      saveServerCollection(Array.from(savedCards.values()));
+    }
+
+    async function loadServerUser() {
+      try {
+        const res = await fetch("/auth/me", { method: "GET" });
+        const data = await res.json();
+        return data.user || null;
+      } catch (error) {
+        return null;
+      }
+    }
+
+    async function fetchServerCollection() {
+      if (!serverUser) return [];
+      try {
+        const res = await fetch("/collection", { method: "GET" });
+        const data = await res.json();
+        const cards = Array.isArray(data.cards) ? data.cards : [];
+        return cards.map((card) => ({
+          key: card.card_key || card.key,
+          name: card.name,
+          image_url: card.image_url,
+          count: card.count,
+        }));
+      } catch (error) {
+        return [];
+      }
+    }
+
+    async function saveServerCollection(cards) {
+      if (!serverUser) return;
+      try {
+        await fetch("/collection", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cards }),
+        });
+      } catch (error) {
+        // ignore network sync errors
+      }
+    }
+
+    async function syncCollectionFromServer() {
+      if (!serverUser) return;
+      const localCards = readSavedCards();
+      const remoteCards = await fetchServerCollection();
+      if (!remoteCards.length && localCards.length) {
+        await saveServerCollection(localCards);
+        return;
+      }
+      if (remoteCards.length) {
+        const merged = mergeCollections(localCards, remoteCards);
+        writeSavedCards(merged);
+        await saveServerCollection(merged);
+      }
+    }
+
+    async function matchPhoto() {
+      if (!selectedDataUrl) {
+        setStatus("Select a photo first.", true);
+        return;
+      }
+      if (!isScanning) {
+        setStatus("Matching...");
+      }
+
+      const response = await fetch("/match", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: selectedDataUrl }),
+      });
+
+      const payload = await response.json();
+      if (!response.ok) {
+        if (!isScanning) {
+          setStatus(payload.error || "Match failed", true);
+        }
+        return;
+      }
+
+      if (!isScanning) {
+        setStatus("Match added to pending list.");
+      }
+      if (payload.image_url) {
+        addToPending(payload);
+      }
+    }
+
+    function deletePendingCard(card, key) {
+      pendingCards.delete(key);
+      card.remove();
+      persistPendingCards();
+      updatePendingEmptyState();
+      updatePendingCounts();
+    }
+
+    photoInput.addEventListener("change", (event) => {
+      const file = event.target.files[0];
+      if (!file) {
+        selectedDataUrl = null;
+        setStatus("Select a photo to start.");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        selectedDataUrl = reader.result;
+        setStatus("Matching...");
+        matchPhoto();
+      };
+      reader.readAsDataURL(file);
+      event.target.value = "";
+    });
+
+    selectButton.addEventListener("click", () => {
+      photoInput.value = "";
+      photoInput.click();
+    });
+
+    async function startCamera() {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        setStatus("Camera not supported in this browser.", true);
+        return;
+      }
+      try {
+        cameraStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "environment" },
+          audio: false,
+        });
+        cameraPreview.srcObject = cameraStream;
+        capturePhotoButton.disabled = false;
+        autoScanButton.disabled = false;
+        stopCameraButton.disabled = false;
+        startCameraButton.disabled = true;
+        setStatus("Camera ready. Tap capture to scan.");
+      } catch (error) {
+        setStatus("Camera permission denied or unavailable.", true);
+      }
+    }
+
+    function stopCamera() {
+      stopAutoScan();
+      if (cameraStream) {
+        cameraStream.getTracks().forEach((track) => track.stop());
+        cameraStream = null;
+      }
+      cameraPreview.srcObject = null;
+      capturePhotoButton.disabled = true;
+      autoScanButton.disabled = true;
+      stopCameraButton.disabled = true;
+      startCameraButton.disabled = false;
+      setStatus("Camera stopped.");
+    }
+
+    function captureFromCamera() {
+      if (!cameraPreview || !cameraStream) {
+        setStatus("Start the camera before capturing.", true);
+        return;
+      }
+      const width = cameraPreview.videoWidth || 1280;
+      const height = cameraPreview.videoHeight || 720;
+      cameraCanvas.width = width;
+      cameraCanvas.height = height;
+      const ctx = cameraCanvas.getContext("2d");
+      ctx.drawImage(cameraPreview, 0, 0, width, height);
+      selectedDataUrl = cameraCanvas.toDataURL("image/jpeg", 0.92);
+      matchPhoto();
+    }
+
+    function startAutoScan() {
+      if (!cameraStream || isScanning) {
+        return;
+      }
+      isScanning = true;
+      autoScanButton.textContent = "Stop auto";
+      autoScanButton.classList.remove("secondary");
+      setStatus("Auto scanning... hold card steady.");
+      autoScanTimer = setInterval(() => {
+        if (!cameraStream) return;
+        captureFromCamera();
+      }, 1800);
+    }
+
+    function stopAutoScan() {
+      if (!isScanning) return;
+      isScanning = false;
+      autoScanButton.textContent = "Auto scan";
+      autoScanButton.classList.add("secondary");
+      if (autoScanTimer) {
+        clearInterval(autoScanTimer);
+        autoScanTimer = null;
+      }
+    }
+
+    function toggleAutoScan() {
+      if (isScanning) {
+        stopAutoScan();
+        setStatus("Auto scan stopped.");
+      } else {
+        startAutoScan();
+      }
+    }
+
+    startCameraButton.addEventListener("click", startCamera);
+    stopCameraButton.addEventListener("click", stopCamera);
+    capturePhotoButton.addEventListener("click", captureFromCamera);
+    autoScanButton.addEventListener("click", toggleAutoScan);
+
+    pendingGrid.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-action]");
+      if (!button) return;
+      const card = button.closest(".pending-card");
+      if (!card) return;
+      const key = card.dataset.cardKey;
+      const cardData = pendingCards.get(key);
+      if (!cardData) return;
+      const action = button.dataset.action;
+      if (action === "delete") {
+        deletePendingCard(card, key);
+        return;
+      }
+      if (action === "save") {
+        movePendingToSaved(cardData);
+        deletePendingCard(card, key);
+      }
+    });
+
+    pendingSaveAll.addEventListener("click", () => {
+      if (!pendingCards.size) return;
+      Array.from(pendingCards.values()).forEach((cardData) => {
+        movePendingToSaved(cardData);
+      });
+      pendingCards.clear();
+      pendingGrid.innerHTML = "";
+      persistPendingCards();
+      updatePendingEmptyState();
+      updatePendingCounts();
+      setStatus("All pending matches saved.");
+    });
+
+    pendingDeleteAll.addEventListener("click", () => {
+      if (!pendingCards.size) return;
+      pendingCards.clear();
+      pendingGrid.innerHTML = "";
+      persistPendingCards();
+      updatePendingEmptyState();
+      updatePendingCounts();
+      setStatus("All pending matches deleted.");
+    });
+
+    window.addEventListener("load", async () => {
+      serverUser = await loadServerUser();
+      await syncCollectionFromServer();
+      hydrateSavedCards();
+      hydratePendingCards();
+    });
+
+    window.addEventListener("beforeunload", () => {
+      stopCamera();
+    });
+  </script>
+{% endblock %}
