@@ -1,3 +1,26 @@
+"""
+DEPRECATED: This is the legacy monolithic application file.
+
+The application has been refactored following Flask best practices.
+Please use the new structure:
+
+    - run.py              - Application entry point
+    - app/__init__.py     - Application factory
+    - app/config.py       - Configuration classes
+    - app/extensions.py   - Flask extensions
+    - app/models/         - Database models
+    - app/routes/         - Blueprint routes
+    - app/services/       - Business logic
+
+To run the application:
+    python run.py
+
+Or use Flask CLI:
+    flask --app app:create_app run
+
+This file is kept for reference only.
+"""
+
 import base64
 import io
 import json
