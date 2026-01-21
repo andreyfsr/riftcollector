@@ -26,7 +26,11 @@ from card_matcher import (
     load_cards_index,
     preprocess_image,
 )
-from card_detector import CardDetector
+import imagehash
+
+# Fast matcher cache
+_fast_matcher_cache = None
+
 
 load_dotenv()
 
@@ -38,57 +42,6 @@ Compress(app)
 
 APP_ROOT = Path(__file__).resolve().parent
 DB_PATH = APP_ROOT / "cards.sqlite"
-_card_detector = None
-
-
-def _get_card_detector():
-    """Get or create the card detector instance."""
-    global _card_detector
-    if _card_detector is not None:
-        return _card_detector
-
-    # Read configuration from environment
-    model_path_str = os.getenv("DETECTOR_MODEL_PATH")
-    model_path = Path(model_path_str) if model_path_str else None
-
-    confidence = os.getenv("DETECTOR_CONFIDENCE")
-    try:
-        confidence = float(confidence) if confidence else 0.5
-    except ValueError:
-        confidence = 0.5
-
-    max_detections = os.getenv("DETECTOR_MAX_DETECTIONS")
-    try:
-        max_detections = int(max_detections) if max_detections else 5
-    except ValueError:
-        max_detections = 5
-
-    min_card_area = os.getenv("DETECTOR_MIN_CARD_AREA")
-    try:
-        min_card_area = int(min_card_area) if min_card_area else 5000
-    except ValueError:
-        min_card_area = 5000
-
-    aspect_ratio_min = os.getenv("DETECTOR_ASPECT_MIN")
-    aspect_ratio_max = os.getenv("DETECTOR_ASPECT_MAX")
-    try:
-        aspect_ratio_min = float(aspect_ratio_min) if aspect_ratio_min else 1.2
-    except ValueError:
-        aspect_ratio_min = 1.2
-    try:
-        aspect_ratio_max = float(aspect_ratio_max) if aspect_ratio_max else 1.8
-    except ValueError:
-        aspect_ratio_max = 1.8
-
-    _card_detector = CardDetector(
-        model_path=model_path,
-        confidence_threshold=confidence,
-        max_detections=max_detections,
-        min_card_area=min_card_area,
-        aspect_ratio_range=(aspect_ratio_min, aspect_ratio_max),
-        use_hash_matching=True,
-    )
-    return _card_detector
 
 
 def _ensure_collection_schema(conn: sqlite3.Connection) -> None:
@@ -439,6 +392,87 @@ def add_static_cache_headers(response):
     return response
 
 
+def _get_fast_matcher():
+    """Get or initialize the fast matcher cache."""
+    global _fast_matcher_cache
+    if _fast_matcher_cache is not None:
+        return _fast_matcher_cache
+
+    cache_path = APP_ROOT / "hash_cache.npz"
+    if not cache_path.exists():
+        return None
+
+    data = np.load(cache_path, allow_pickle=True)
+    _fast_matcher_cache = {
+        "riftbound_ids": data["riftbound_ids"],
+        "filenames": data["filenames"],
+        "full_phash": data["full_phash"],
+        "full_dhash": data["full_dhash"],
+    }
+    return _fast_matcher_cache
+
+
+@app.route("/api/fast-match", methods=["POST"])
+def fast_match():
+    """Fast hash-based card matching for live scanning."""
+    payload = request.get_json(silent=True) or {}
+    image_data = payload.get("image")
+    threshold = payload.get("threshold", 28)
+
+    if not image_data:
+        return jsonify({"error": "No image provided"}), 400
+
+    if "base64," in image_data:
+        image_data = image_data.split("base64,", 1)[1]
+
+    try:
+        raw_bytes = base64.b64decode(image_data)
+        pil_image = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+    except Exception:
+        return jsonify({"error": "Invalid image payload"}), 400
+
+    # Resize to standard card size
+    pil_image = pil_image.resize((300, 420), Image.BILINEAR)
+
+    # Get fast matcher cache
+    matcher = _get_fast_matcher()
+    if matcher is None:
+        return jsonify({"error": "Hash cache not available"}), 503
+
+    # Compute hashes
+    phash = imagehash.phash(pil_image, hash_size=8)
+    dhash = imagehash.dhash(pil_image, hash_size=8)
+
+    phash_arr = phash.hash.astype(np.uint8)
+    dhash_arr = dhash.hash.astype(np.uint8)
+
+    # Vectorized comparison
+    phash_diff = np.sum(matcher["full_phash"] != phash_arr, axis=(1, 2))
+    dhash_diff = np.sum(matcher["full_dhash"] != dhash_arr, axis=(1, 2))
+    total_diff = phash_diff + dhash_diff
+
+    # Find best match
+    best_idx = np.argmin(total_diff)
+    best_distance = int(total_diff[best_idx])
+
+    if best_distance > threshold:
+        return jsonify({"matched": False, "distance": best_distance}), 200
+
+    rid = str(matcher["riftbound_ids"][best_idx])
+    filename = str(matcher["filenames"][best_idx])
+
+    # Get card info
+    card = load_cards_index().get(rid, {})
+
+    return jsonify({
+        "matched": True,
+        "riftbound_id": rid,
+        "name": card.get("name", rid),
+        "distance": best_distance,
+        "image_url": f"/cards_webp/{filename}",
+    }), 200
+
+
 @app.route("/match", methods=["POST"])
 def match_card():
     payload = request.get_json(silent=True) or {}
@@ -516,41 +550,8 @@ def match_card():
 
 @app.route("/detect", methods=["POST"])
 def detect_cards():
-    detector = _get_card_detector()
-    if detector is None:
-        return jsonify({"error": "Detector not available"}), 503
-
-    payload = request.get_json(silent=True) or {}
-    image_data = payload.get("image")
-    if not image_data:
-        return jsonify({"error": "No image provided"}), 400
-
-    if "base64," in image_data:
-        image_data = image_data.split("base64,", 1)[1]
-
-    try:
-        raw_bytes = base64.b64decode(image_data)
-        frame = cv2.imdecode(np.frombuffer(raw_bytes, np.uint8), cv2.IMREAD_COLOR)
-    except Exception:
-        frame = None
-
-    if frame is None:
-        return jsonify({"error": "Invalid image payload"}), 400
-
-    detections = detector.detect(frame)
-    serialized = []
-    for det in detections:
-        polygon = det.polygon if det.polygon is not None else []
-        serialized.append(
-            {
-                "card_id": det.card_id,
-                "confidence": det.confidence,
-                "bbox": list(det.bbox),
-                "polygon": [[float(x), float(y)] for x, y in polygon] if len(polygon) > 0 else [],
-                "match_distance": det.match_distance,
-            }
-        )
-    return jsonify({"detections": serialized}), 200
+    """Legacy detect endpoint - use /api/fast-match instead."""
+    return jsonify({"error": "Detector removed. Use /api/fast-match instead."}), 410
 
 
 if __name__ == "__main__":

@@ -10,864 +10,433 @@
 
   <div class="layout">
     <div class="panel">
-      <h2>Show a Riftbound card</h2>
-      <div style="position: relative; width: 100%; max-width: 720px;">
-        <video id="liveCamera" autoplay playsinline muted style="width: 100%; height: auto;"></video>
-        <canvas
-          id="liveOverlay"
-          style="position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; background: transparent; border-radius: 12px;"
-        ></canvas>
+      <h2>Hold a card in the frame</h2>
+      <div style="position: relative; width: 100%; max-width: 640px;">
+        <video id="liveCamera" autoplay playsinline muted style="width: 100%; height: auto; border-radius: 12px;"></video>
+        <canvas id="liveOverlay" style="position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;"></canvas>
       </div>
       <canvas id="liveCanvas" hidden></canvas>
-      <div class="camera-actions">
-        <button id="liveStart" class="secondary" type="button">Start camera</button>
-        <button id="liveScanNow" type="button" disabled>Scan now</button>
-        <button id="liveToggleAuto" class="secondary" type="button" disabled>Auto scan</button>
-        <button id="liveStop" class="secondary" type="button" disabled>Stop</button>
+      <div class="camera-actions" style="margin-top: 12px;">
+        <button id="btnStart" type="button">Start Camera</button>
+        <button id="btnStop" class="secondary" type="button" disabled>Stop</button>
       </div>
-      <div id="liveStatus" class="result">Waiting for camera permission...</div>
+      <div id="statusText" class="result" style="margin-top: 12px;">Click "Start Camera" to begin scanning.</div>
     </div>
 
     <div class="panel">
-      <h2>Debug output</h2>
-      <div class="meta">Share this log to tweak matching settings.</div>
-      <button id="debugCopy" class="secondary" type="button">Copy debug log</button>
-      <div class="result" style="margin-top: 12px;">
-        <strong>Detection feedback</strong>
-        <div id="liveDetectionStatus">Waiting for detections...</div>
-        <label style="display: block; margin-top: 10px;">
-          <input id="liveIncludeSnapshot" type="checkbox" checked />
-          Include a small frame snapshot in the feedback log
-        </label>
-        <div class="camera-actions" style="margin-top: 6px;">
-          <button id="liveFeedbackDownload" class="secondary" type="button" disabled>
-            Download feedback JSON
-          </button>
-        </div>
+      <h2>Pending Matches</h2>
+      <div class="meta">Confirm cards before adding to your collection.</div>
+      <div id="pendingList" class="result" style="min-height: 100px;">
+        <div id="pendingEmpty" style="color: #64748b;">No cards scanned yet.</div>
       </div>
-      <pre
-        id="debugOutput"
-        class="result"
-        style="white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;"
-      ></pre>
+      <div class="camera-actions" style="margin-top: 12px;">
+        <button id="btnClearPending" class="secondary" type="button" disabled>Clear All</button>
+        <button id="btnAddToCollection" type="button" disabled>Add to Collection</button>
+      </div>
+      <div id="collectionStatus" class="result" style="margin-top: 12px; display: none;"></div>
     </div>
   </div>
 
-  <div id="liveMatchModal" class="modal-backdrop" aria-hidden="true">
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="liveMatchTitle">
-      <img id="liveMatchImage" class="modal-preview" alt="Matched card preview" />
-      <h3 id="liveMatchTitle">Match found</h3>
-      <p id="liveMatchMeta"></p>
-      <div id="liveCandidateList" class="result" style="margin-bottom: 12px;"></div>
-
-      <div id="liveCorrection" hidden>
-        <label for="liveCorrectionInput" style="display: block; margin-bottom: 6px;">
-          Enter the correct card
-        </label>
-        <input
-          id="liveCorrectionInput"
-          type="text"
-          placeholder="Card name or Riftbound ID"
-          style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid #334155; background: #0f172a; color: #f9fafb; margin-bottom: 12px;"
-        />
-        <div class="modal-actions" style="justify-content: flex-start;">
-          <button id="liveSubmitCorrection" type="button">Submit correction</button>
-        </div>
-      </div>
-
+  <!-- Confirmation Modal -->
+  <div id="confirmModal" class="modal-backdrop" style="display: none;">
+    <div class="modal" role="dialog" aria-modal="true">
+      <img id="modalImage" class="modal-preview" alt="Matched card" style="max-width: 200px; border-radius: 8px;" />
+      <h3 id="modalTitle">Card Detected</h3>
+      <p id="modalMeta" style="color: #94a3b8;"></p>
       <div class="modal-actions">
-        <button id="liveConfirmCorrect" type="button">Yes, correct</button>
-        <button id="liveConfirmWrong" class="secondary" type="button">No, wrong</button>
-        <button id="liveConfirmNone" class="secondary" type="button">No card shown</button>
+        <button id="btnConfirmYes" type="button">Yes, Add It</button>
+        <button id="btnConfirmNo" class="secondary" type="button">No, Skip</button>
       </div>
     </div>
   </div>
 
-  <div id="liveDetectionModal" class="modal-backdrop" aria-hidden="true">
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="liveDetectionTitle">
-      <h3 id="liveDetectionTitle">Detection check</h3>
-      <p id="liveDetectionMeta">Is this detection correct?</p>
-      <div class="modal-actions">
-        <button id="liveDetectionCorrect" type="button">Right match</button>
-        <button id="liveDetectionWrong" class="secondary" type="button">Wrong match</button>
-        <button id="liveDetectionNone" class="secondary" type="button">No card shown</button>
-      </div>
-    </div>
-  </div>
+  <style>
+    .pending-card {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px;
+      background: #1e293b;
+      border-radius: 8px;
+      margin-bottom: 8px;
+    }
+    .pending-card img {
+      width: 50px;
+      height: 70px;
+      object-fit: cover;
+      border-radius: 4px;
+    }
+    .pending-card-info {
+      flex: 1;
+    }
+    .pending-card-name {
+      font-weight: 600;
+      color: #f1f5f9;
+    }
+    .pending-card-meta {
+      font-size: 0.85em;
+      color: #64748b;
+    }
+    .pending-card button {
+      padding: 4px 8px;
+      font-size: 0.85em;
+    }
+  </style>
 
   <script>
     const liveCamera = document.getElementById("liveCamera");
     const liveCanvas = document.getElementById("liveCanvas");
-    const liveStart = document.getElementById("liveStart");
-    const liveScanNow = document.getElementById("liveScanNow");
-    const liveToggleAuto = document.getElementById("liveToggleAuto");
-    const liveStop = document.getElementById("liveStop");
-    const liveStatus = document.getElementById("liveStatus");
-    const debugOutput = document.getElementById("debugOutput");
     const liveOverlay = document.getElementById("liveOverlay");
     const overlayCtx = liveOverlay.getContext("2d");
-
-    const liveMatchModal = document.getElementById("liveMatchModal");
-    const liveMatchImage = document.getElementById("liveMatchImage");
-    const liveMatchTitle = document.getElementById("liveMatchTitle");
-    const liveMatchMeta = document.getElementById("liveMatchMeta");
-    const liveCandidateList = document.getElementById("liveCandidateList");
-    const liveConfirmCorrect = document.getElementById("liveConfirmCorrect");
-    const liveConfirmWrong = document.getElementById("liveConfirmWrong");
-    const liveConfirmNone = document.getElementById("liveConfirmNone");
-    const debugCopy = document.getElementById("debugCopy");
-    const liveCorrection = document.getElementById("liveCorrection");
-    const liveCorrectionInput = document.getElementById("liveCorrectionInput");
-    const liveSubmitCorrection = document.getElementById("liveSubmitCorrection");
-    const liveDetectionStatus = document.getElementById("liveDetectionStatus");
-    const liveIncludeSnapshot = document.getElementById("liveIncludeSnapshot");
-    const liveDetectionCorrect = document.getElementById("liveDetectionCorrect");
-    const liveDetectionWrong = document.getElementById("liveDetectionWrong");
-    const liveDetectionNone = document.getElementById("liveDetectionNone");
-    const liveDetectionModal = document.getElementById("liveDetectionModal");
-    const liveDetectionMeta = document.getElementById("liveDetectionMeta");
-    const liveFeedbackDownload = document.getElementById("liveFeedbackDownload");
+    const btnStart = document.getElementById("btnStart");
+    const btnStop = document.getElementById("btnStop");
+    const statusText = document.getElementById("statusText");
+    const pendingList = document.getElementById("pendingList");
+    const pendingEmpty = document.getElementById("pendingEmpty");
+    const btnClearPending = document.getElementById("btnClearPending");
+    const btnAddToCollection = document.getElementById("btnAddToCollection");
+    const collectionStatus = document.getElementById("collectionStatus");
+    
+    const confirmModal = document.getElementById("confirmModal");
+    const modalImage = document.getElementById("modalImage");
+    const modalTitle = document.getElementById("modalTitle");
+    const modalMeta = document.getElementById("modalMeta");
+    const btnConfirmYes = document.getElementById("btnConfirmYes");
+    const btnConfirmNo = document.getElementById("btnConfirmNo");
 
     let cameraStream = null;
-    let autoScanTimer = null;
-    let detectTimer = null;
-    let autoScanEnabled = true;
-    let isMatching = false;
-    let isDetecting = false;
-    let isDetectionPromptOpen = false;
-    let lastMatchPayload = null;
-    let lastCaptureInfo = null;
-    let lastAutoMatchId = null;
-    let lastAutoMatchCount = 0;
-    let lastPresenceLog = 0;
-    let lastDetectionPayload = null;
-    let lastDetectionMeta = null;
-    let lastDetectionSnapshot = null;
-    let lastDetectionFeedbackAt = 0;
-    const feedbackEntries = [];
-    const detectCanvas = document.createElement("canvas");
-    const detectCtx = detectCanvas.getContext("2d", { willReadFrequently: true });
-    const detectFrameCanvas = document.createElement("canvas");
-    const detectFrameCtx = detectFrameCanvas.getContext("2d");
-    const DETECT_WIDTH = 160;
-    const DETECT_HEIGHT = 120;
-    const EDGE_THRESHOLD = 35;
-    const EDGE_DENSITY_MIN = 0.12;
-    const CENTER_EDGE_DENSITY_MIN = 0.1;
-    const BORDER_EDGE_DENSITY_MIN = 0.18;
-    const BORDER_CENTER_RATIO_MIN = 1.15;
-    const VARIANCE_MIN = 7000;
-    const PRESENCE_LOG_THROTTLE_MS = 2500;
-    const DETECT_INTERVAL_MS = 200;
-    const DETECT_FEEDBACK_COOLDOWN_MS = 1500;
-    const DETECT_CAPTURE_WIDTH = 320;
-    const DETECT_CAPTURE_QUALITY = 0.45;
+    let scanTimer = null;
+    let isScanning = false;
+    let pendingCards = [];
+    let currentMatch = null;
+    let lastMatchId = null;
+    let matchCount = 0;
 
-    function setStatus(message, isError = false) {
-      if (isError) {
-        liveStatus.innerHTML = `<span class="error">${message}</span>`;
-      } else {
-        liveStatus.textContent = message;
-      }
+    const SCAN_INTERVAL = 400;
+    const MATCH_THRESHOLD = 28;
+    const STABILITY_REQUIRED = 2;
+    const ROI_SCALE = 0.7;
+
+    function setStatus(msg, isError = false) {
+      statusText.innerHTML = isError 
+        ? `<span style="color: #f87171;">${msg}</span>` 
+        : msg;
     }
 
-    function appendDebug(entry) {
-      const timestamp = new Date().toISOString();
-      const line = `[${timestamp}] ${entry}`;
-      debugOutput.textContent = debugOutput.textContent
-        ? `${line}\n${debugOutput.textContent}`
-        : line;
-    }
-
-    function setDetectionStatus(message) {
-      liveDetectionStatus.textContent = message;
-    }
-
-    function updateFeedbackDownload() {
-      liveFeedbackDownload.disabled = feedbackEntries.length === 0;
-    }
-
-    function openDetectionModal() {
-      liveDetectionModal.style.display = "flex";
-      liveDetectionModal.setAttribute("aria-hidden", "false");
-      isDetectionPromptOpen = true;
-      stopDetectLoop();
-    }
-
-    function closeDetectionModal() {
-      liveDetectionModal.style.display = "none";
-      liveDetectionModal.setAttribute("aria-hidden", "true");
-      isDetectionPromptOpen = false;
-      if (cameraStream) {
-        startDetectLoop();
-      }
-    }
-
-    function syncOverlaySize(width, height) {
-      if (liveOverlay.width !== width || liveOverlay.height !== height) {
-        liveOverlay.width = width;
-        liveOverlay.height = height;
-      }
-    }
-
-    function clearOverlay() {
-      overlayCtx.clearRect(0, 0, liveOverlay.width, liveOverlay.height);
-    }
-
-    function renderDetections(detections) {
-      clearOverlay();
-      if (!Array.isArray(detections) || !detections.length) {
-        return;
-      }
-      overlayCtx.lineWidth = 2;
-      overlayCtx.strokeStyle = "#22d3ee";
-      overlayCtx.fillStyle = "rgba(34, 211, 238, 0.12)";
-      overlayCtx.font = "16px system-ui, sans-serif";
-      overlayCtx.textBaseline = "top";
-      detections.forEach((det) => {
-        const polygon = det.polygon || [];
-        if (polygon.length < 3) {
-          return;
-        }
-        overlayCtx.beginPath();
-        polygon.forEach((point, index) => {
-          const [x, y] = point;
-          if (index === 0) {
-            overlayCtx.moveTo(x, y);
-          } else {
-            overlayCtx.lineTo(x, y);
-          }
+    function updatePendingUI() {
+      pendingEmpty.style.display = pendingCards.length ? "none" : "block";
+      btnClearPending.disabled = !pendingCards.length;
+      btnAddToCollection.disabled = !pendingCards.length;
+      
+      // Render pending cards
+      const cardsHtml = pendingCards.map((card, idx) => `
+        <div class="pending-card" data-idx="${idx}">
+          <img src="${card.image_url}" alt="${card.name}" />
+          <div class="pending-card-info">
+            <div class="pending-card-name">${card.name}</div>
+            <div class="pending-card-meta">Distance: ${card.distance}</div>
+          </div>
+          <button class="secondary remove-pending" data-idx="${idx}">Remove</button>
+        </div>
+      `).join("");
+      
+      pendingList.innerHTML = cardsHtml || '<div id="pendingEmpty" style="color: #64748b;">No cards scanned yet.</div>';
+      
+      // Add remove handlers
+      pendingList.querySelectorAll(".remove-pending").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+          const idx = parseInt(e.target.dataset.idx);
+          pendingCards.splice(idx, 1);
+          updatePendingUI();
         });
-        overlayCtx.closePath();
-        overlayCtx.fill();
-        overlayCtx.stroke();
-        const label = `${det.card_id || "Card"} (${det.inliers || 0})`;
-        const [x, y] = polygon[0];
-        overlayCtx.fillStyle = "rgba(15, 23, 42, 0.7)";
-        overlayCtx.fillRect(x - 2, Math.max(y - 20, 2), overlayCtx.measureText(label).width + 8, 20);
-        overlayCtx.fillStyle = "#e2e8f0";
-        overlayCtx.fillText(label, x + 2, Math.max(y - 18, 4));
-        overlayCtx.fillStyle = "rgba(34, 211, 238, 0.12)";
       });
     }
 
-    async function copyDebugLog() {
-      const text = debugOutput.textContent || "";
-      if (!text) {
-        setStatus("Debug log is empty.", true);
-        return;
+    function getROI() {
+      const vw = liveCamera.videoWidth || 640;
+      const vh = liveCamera.videoHeight || 480;
+      const roiH = Math.round(vh * ROI_SCALE);
+      const roiW = Math.round(roiH / 1.4);
+      const x = Math.round((vw - roiW) / 2);
+      const y = Math.round((vh - roiH) / 2);
+      return { x, y, w: roiW, h: roiH, vw, vh };
+    }
+
+    function drawOverlay(hasMatch = false) {
+      const { x, y, w, h, vw, vh } = getROI();
+      
+      liveOverlay.width = vw;
+      liveOverlay.height = vh;
+      overlayCtx.clearRect(0, 0, vw, vh);
+      
+      const color = hasMatch ? "#22c55e" : "#6366f1";
+      
+      // Draw ROI rectangle
+      overlayCtx.strokeStyle = color;
+      overlayCtx.lineWidth = 3;
+      overlayCtx.strokeRect(x, y, w, h);
+      
+      // Corner markers
+      const c = 25;
+      overlayCtx.lineWidth = 5;
+      // Top-left
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(x, y + c); overlayCtx.lineTo(x, y); overlayCtx.lineTo(x + c, y);
+      overlayCtx.stroke();
+      // Top-right
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(x + w - c, y); overlayCtx.lineTo(x + w, y); overlayCtx.lineTo(x + w, y + c);
+      overlayCtx.stroke();
+      // Bottom-left
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(x, y + h - c); overlayCtx.lineTo(x, y + h); overlayCtx.lineTo(x + c, y + h);
+      overlayCtx.stroke();
+      // Bottom-right
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(x + w - c, y + h); overlayCtx.lineTo(x + w, y + h); overlayCtx.lineTo(x + w, y + h - c);
+      overlayCtx.stroke();
+      
+      // Instruction
+      if (!hasMatch) {
+        overlayCtx.font = "16px system-ui, sans-serif";
+        overlayCtx.fillStyle = color;
+        overlayCtx.textAlign = "center";
+        overlayCtx.fillText("Hold card in frame", vw / 2, y + h + 30);
       }
+    }
+
+    function captureROI() {
+      const { x, y, w, h, vw, vh } = getROI();
+      liveCanvas.width = w;
+      liveCanvas.height = h;
+      const ctx = liveCanvas.getContext("2d");
+      ctx.drawImage(liveCamera, x, y, w, h, 0, 0, w, h);
+      return liveCanvas.toDataURL("image/jpeg", 0.85);
+    }
+
+    async function scanFrame() {
+      if (isScanning || !cameraStream || confirmModal.style.display !== "none") return;
+      
+      isScanning = true;
+      const imageData = captureROI();
+      
       try {
-        if (navigator.clipboard?.writeText) {
-          await navigator.clipboard.writeText(text);
+        const resp = await fetch("/api/fast-match", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image: imageData, threshold: MATCH_THRESHOLD }),
+        });
+        const data = await resp.json();
+        
+        if (data.matched) {
+          // Check stability
+          if (data.riftbound_id === lastMatchId) {
+            matchCount++;
+          } else {
+            lastMatchId = data.riftbound_id;
+            matchCount = 1;
+          }
+          
+          drawOverlay(true);
+          
+          if (matchCount >= STABILITY_REQUIRED) {
+            // Check if already in pending
+            const alreadyPending = pendingCards.some(c => c.riftbound_id === data.riftbound_id);
+            if (!alreadyPending) {
+              currentMatch = data;
+              showConfirmModal(data);
+            } else {
+              setStatus(`${data.name} already in pending list.`);
+            }
+          } else {
+            setStatus(`Hold steady... (${matchCount}/${STABILITY_REQUIRED})`);
+          }
         } else {
-          const temp = document.createElement("textarea");
-          temp.value = text;
-          temp.style.position = "fixed";
-          temp.style.opacity = "0";
-          document.body.appendChild(temp);
-          temp.focus();
-          temp.select();
-          document.execCommand("copy");
-          document.body.removeChild(temp);
+          lastMatchId = null;
+          matchCount = 0;
+          drawOverlay(false);
+          setStatus("Scanning... hold card in frame.");
         }
-        setStatus("Debug log copied to clipboard.");
-      } catch (error) {
-        setStatus("Failed to copy debug log.", true);
-        appendDebug(`copy_error: ${error?.message || error}`);
+      } catch (err) {
+        console.error("Scan error:", err);
+        setStatus("Scan error. Retrying...", true);
+      }
+      
+      isScanning = false;
+    }
+
+    function showConfirmModal(match) {
+      stopScanLoop();
+      modalImage.src = match.image_url;
+      modalTitle.textContent = match.name;
+      modalMeta.textContent = `Distance: ${match.distance}`;
+      confirmModal.style.display = "flex";
+    }
+
+    function closeConfirmModal() {
+      confirmModal.style.display = "none";
+      currentMatch = null;
+      lastMatchId = null;
+      matchCount = 0;
+      if (cameraStream) {
+        startScanLoop();
       }
     }
 
-    function renderCandidates(candidates) {
-      if (!Array.isArray(candidates) || !candidates.length) {
-        liveCandidateList.textContent = "No candidates returned.";
-        return;
+    function confirmMatch() {
+      if (currentMatch) {
+        pendingCards.push(currentMatch);
+        updatePendingUI();
+        setStatus(`Added "${currentMatch.name}" to pending.`);
       }
-      liveCandidateList.innerHTML = `
-        <strong>Top candidates</strong>
-        ${candidates
-          .map(
-            (candidate) =>
-              `<div>${candidate.riftbound_id} · distance ${candidate.distance}</div>`
-          )
-          .join("")}
-      `;
+      closeConfirmModal();
     }
 
-    function openMatchModal(payload) {
-      liveMatchImage.src = payload?.image_url || "";
-      liveMatchTitle.textContent = payload?.name || payload?.riftbound_id || "Match found";
-      liveMatchMeta.textContent = payload?.distance
-        ? `Distance: ${payload.distance}`
-        : "Distance unavailable";
-      renderCandidates(payload?.candidates || []);
-      liveCorrection.hidden = true;
-      liveCorrectionInput.value = "";
-      liveMatchModal.style.display = "flex";
-      liveMatchModal.setAttribute("aria-hidden", "false");
-    }
-
-    function closeMatchModal() {
-      liveMatchModal.style.display = "none";
-      liveMatchModal.setAttribute("aria-hidden", "true");
-      liveMatchImage.removeAttribute("src");
-      liveCorrection.hidden = true;
-      liveCorrectionInput.value = "";
+    function skipMatch() {
+      setStatus("Skipped. Continue scanning.");
+      closeConfirmModal();
     }
 
     async function startCamera() {
-      if (!navigator.mediaDevices?.getUserMedia) {
-        setStatus("Camera not supported in this browser.", true);
-        return;
-      }
       try {
         cameraStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "environment" },
+          video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
           audio: false,
         });
         liveCamera.srcObject = cameraStream;
-        liveScanNow.disabled = false;
-        liveToggleAuto.disabled = false;
-        liveStop.disabled = false;
-        liveStart.disabled = true;
-        setStatus("Camera ready. Hold a card in view.");
-        if (autoScanEnabled) {
-          startAutoScan();
-        }
-        startDetectLoop();
-      } catch (error) {
-        setStatus("Camera permission denied or unavailable.", true);
-        appendDebug(`camera_error: ${error?.message || error}`);
+        await liveCamera.play();
+        
+        btnStart.disabled = true;
+        btnStop.disabled = false;
+        setStatus("Camera ready. Hold a card in the frame.");
+        
+        // Wait for video dimensions
+        setTimeout(() => {
+          drawOverlay(false);
+          startScanLoop();
+        }, 500);
+      } catch (err) {
+        setStatus("Camera access denied.", true);
+        console.error(err);
       }
     }
 
     function stopCamera() {
-      stopAutoScan();
-      stopDetectLoop();
+      stopScanLoop();
       if (cameraStream) {
-        cameraStream.getTracks().forEach((track) => track.stop());
+        cameraStream.getTracks().forEach(t => t.stop());
         cameraStream = null;
       }
       liveCamera.srcObject = null;
-      liveScanNow.disabled = true;
-      liveToggleAuto.disabled = true;
-      liveStop.disabled = true;
-      liveStart.disabled = false;
-      clearOverlay();
+      btnStart.disabled = false;
+      btnStop.disabled = true;
+      overlayCtx.clearRect(0, 0, liveOverlay.width, liveOverlay.height);
       setStatus("Camera stopped.");
     }
 
-    function startDetectLoop() {
-      if (!cameraStream || detectTimer) {
+    function startScanLoop() {
+      if (scanTimer) return;
+      scanTimer = setInterval(scanFrame, SCAN_INTERVAL);
+    }
+
+    function stopScanLoop() {
+      if (scanTimer) {
+        clearInterval(scanTimer);
+        scanTimer = null;
+      }
+    }
+
+    function clearPending() {
+      pendingCards = [];
+      updatePendingUI();
+      setStatus("Pending list cleared.");
+    }
+
+    async function addToCollection() {
+      if (!pendingCards.length) return;
+      
+      // Check if user is logged in
+      const authResp = await fetch("/auth/me");
+      const authData = await authResp.json();
+      
+      if (!authData.user) {
+        collectionStatus.style.display = "block";
+        collectionStatus.innerHTML = '<span style="color: #f87171;">Please log in to save to your collection.</span>';
         return;
       }
-      detectTimer = setInterval(() => {
-        if (
-          !cameraStream ||
-          isMatching ||
-          isDetecting ||
-          isDetectionPromptOpen ||
-          liveMatchModal.getAttribute("aria-hidden") === "false"
-        ) {
-          return;
-        }
-        detectFrame();
-      }, DETECT_INTERVAL_MS);
-      appendDebug("detect_loop_start");
-    }
-
-    function stopDetectLoop() {
-      if (detectTimer) {
-        clearInterval(detectTimer);
-        detectTimer = null;
-      }
-      appendDebug("detect_loop_stop");
-    }
-
-    function getVideoSize() {
-      return {
-        width: liveCamera.videoWidth || 1280,
-        height: liveCamera.videoHeight || 720,
-      };
-    }
-
-    function captureFrame() {
-      const { width, height } = getVideoSize();
-      liveCanvas.width = width;
-      liveCanvas.height = height;
-      syncOverlaySize(width, height);
-      const ctx = liveCanvas.getContext("2d");
-      ctx.drawImage(liveCamera, 0, 0, width, height);
-      return { width, height };
-    }
-
-    function captureDetectFrame() {
-      const { width, height } = getVideoSize();
-      const scale = Math.min(1, DETECT_CAPTURE_WIDTH / width);
-      const detectWidth = Math.max(1, Math.round(width * scale));
-      const detectHeight = Math.max(1, Math.round(height * scale));
-      detectFrameCanvas.width = detectWidth;
-      detectFrameCanvas.height = detectHeight;
-      syncOverlaySize(width, height);
-      detectFrameCtx.drawImage(liveCamera, 0, 0, detectWidth, detectHeight);
-      return { width, height, detectWidth, detectHeight, scale };
-    }
-
-    function captureSnapshot(maxWidth = 320) {
-      if (!liveCanvas.width || !liveCanvas.height) {
-        return null;
-      }
-      const scale = Math.min(1, maxWidth / liveCanvas.width);
-      const snapCanvas = document.createElement("canvas");
-      snapCanvas.width = Math.round(liveCanvas.width * scale);
-      snapCanvas.height = Math.round(liveCanvas.height * scale);
-      const snapCtx = snapCanvas.getContext("2d");
-      snapCtx.drawImage(liveCanvas, 0, 0, snapCanvas.width, snapCanvas.height);
-      return snapCanvas.toDataURL("image/jpeg", 0.75);
-    }
-
-    function recordDetectionFeedback(isCorrect) {
-      if (!lastDetectionPayload) {
-        setStatus("No detection to confirm yet.", true);
-        return;
-      }
-      const detectionCount = (lastDetectionPayload?.detections || []).length;
-      const entry = {
-        timestamp: new Date().toISOString(),
-        correct: isCorrect,
-        detection: lastDetectionPayload,
-        meta: lastDetectionMeta,
-        snapshot: lastDetectionSnapshot,
-      };
-      feedbackEntries.push(entry);
-      updateFeedbackDownload();
-      const logEntry = {
-        timestamp: entry.timestamp,
-        correct: entry.correct,
-        no_card: entry.no_card,
-        detection: entry.detection,
-        meta: entry.meta,
-        snapshot_bytes: entry.snapshot ? entry.snapshot.length : 0,
-      };
-      appendDebug(`detect_feedback ${JSON.stringify(logEntry)}`);
-      setDetectionStatus("Feedback saved. Waiting for next detection...");
-      closeDetectionModal();
-      lastDetectionFeedbackAt = Date.now();
-      lastDetectionPayload = null;
-      lastDetectionMeta = null;
-      lastDetectionSnapshot = null;
-      if (detectionCount === 0) {
-        clearOverlay();
-      }
-    }
-
-    function recordNoCardFeedback() {
-      const entry = {
-        timestamp: new Date().toISOString(),
-        correct: false,
-        detection: lastDetectionPayload,
-        meta: lastDetectionMeta,
-        snapshot: lastDetectionSnapshot,
-        no_card: true,
-      };
-      feedbackEntries.push(entry);
-      updateFeedbackDownload();
-      const logEntry = {
-        timestamp: entry.timestamp,
-        correct: entry.correct,
-        no_card: entry.no_card,
-        detection: entry.detection,
-        meta: entry.meta,
-        snapshot_bytes: entry.snapshot ? entry.snapshot.length : 0,
-      };
-      appendDebug(`detect_feedback ${JSON.stringify(logEntry)}`);
-      setDetectionStatus("No card logged. Waiting for next detection...");
-      closeDetectionModal();
-      lastDetectionFeedbackAt = Date.now();
-      lastDetectionPayload = null;
-      lastDetectionMeta = null;
-      lastDetectionSnapshot = null;
-      clearOverlay();
-    }
-
-    async function detectFrame() {
-      if (!liveCamera || !cameraStream) {
-        return;
-      }
-      if (Date.now() - lastDetectionFeedbackAt < DETECT_FEEDBACK_COOLDOWN_MS) {
-        return;
-      }
-      const { width, height, detectWidth, detectHeight, scale } = captureDetectFrame();
-      const dataUrl = detectFrameCanvas.toDataURL("image/jpeg", DETECT_CAPTURE_QUALITY);
-      isDetecting = true;
-      const startedAt = performance.now();
-      try {
-        const response = await fetch("/detect", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ image: dataUrl }),
-        });
-        const payload = await response.json();
-        const duration = Math.round(performance.now() - startedAt);
-        if (!response.ok) {
-          appendDebug(
-            `detect_failed status=${response.status} duration=${duration}ms ` +
-              `payload=${JSON.stringify(payload)}`
-          );
-          clearOverlay();
-          setDetectionStatus("Detection failed. Waiting...");
-          isDetecting = false;
-          return;
-        }
-        const rawDetections = payload?.detections || [];
-        const scaleUp = scale > 0 ? 1 / scale : 1;
-        const scaledDetections =
-          scaleUp === 1
-            ? rawDetections
-            : rawDetections.map((det) => ({
-                ...det,
-                polygon: (det.polygon || []).map(([x, y]) => [x * scaleUp, y * scaleUp]),
-              }));
-        renderDetections(scaledDetections);
-        const count = (payload?.detections || []).length;
-        if (count) {
-          lastDetectionPayload = payload;
-          lastDetectionMeta = { width, height, detectWidth, detectHeight, duration };
-          let snapshot = null;
-          if (liveIncludeSnapshot?.checked) {
-            captureFrame();
-            snapshot = captureSnapshot();
-          }
-          lastDetectionSnapshot = snapshot;
-          setDetectionStatus(`Detected ${count} card${count > 1 ? "s" : ""}.`);
-          liveDetectionMeta.textContent = `Detected ${count} card${count > 1 ? "s" : ""}. Is it correct?`;
-          if (!isDetectionPromptOpen) {
-            openDetectionModal();
-          }
-        } else {
-          lastDetectionPayload = null;
-          lastDetectionMeta = null;
-          lastDetectionSnapshot = null;
-          setDetectionStatus("No detections.");
-        }
-        appendDebug(
-          `detect_ok duration=${duration}ms ` +
-            `size=${width}x${height} detect=${detectWidth}x${detectHeight} ` +
-            `count=${(payload?.detections || []).length}`
-        );
-      } catch (error) {
-        appendDebug(`detect_error: ${error?.message || error}`);
-        setDetectionStatus("Detection error. Waiting...");
-      } finally {
-        isDetecting = false;
-      }
-    }
-
-    function startAutoScan() {
-      if (!cameraStream || autoScanTimer) {
-        return;
-      }
-      autoScanEnabled = true;
-      liveToggleAuto.textContent = "Stop auto";
-      liveToggleAuto.classList.remove("secondary");
-      autoScanTimer = setInterval(() => {
-        if (!cameraStream || isMatching || liveMatchModal.getAttribute("aria-hidden") === "false") {
-          return;
-        }
-        captureAndMatch({ source: "auto" });
-      }, 2000);
-      appendDebug("auto_scan_start");
-    }
-
-    function stopAutoScan() {
-      if (autoScanTimer) {
-        clearInterval(autoScanTimer);
-        autoScanTimer = null;
-      }
-      liveToggleAuto.textContent = "Auto scan";
-      liveToggleAuto.classList.add("secondary");
-      autoScanEnabled = false;
-      appendDebug("auto_scan_stop");
-    }
-
-    function toggleAutoScan() {
-      if (autoScanTimer) {
-        stopAutoScan();
-        setStatus("Auto scan stopped.");
-      } else {
-        startAutoScan();
-        setStatus("Auto scanning... hold card steady.");
-      }
-    }
-
-    function captureAndMatch({ source = "manual" } = {}) {
-      if (!liveCamera || !cameraStream) {
-        setStatus("Start the camera before scanning.", true);
-        return;
-      }
-      const { width, height } = captureFrame();
-      const presence = detectCardPresence();
-      if (!presence.present) {
-        setStatus("No card detected. Hold a card in view.", true);
-        logPresence(presence, source, false);
-        if (source === "auto") {
-          lastAutoMatchId = null;
-          lastAutoMatchCount = 0;
-        }
-        return;
-      }
-      logPresence(presence, source, true);
-      const dataUrl = liveCanvas.toDataURL("image/jpeg", 0.9);
-      lastCaptureInfo = { width, height, bytes: Math.round(dataUrl.length * 0.75) };
-      matchFrame(dataUrl, { source });
-    }
-
-    async function matchFrame(dataUrl, { source = "manual" } = {}) {
-      if (isMatching) return;
-      isMatching = true;
-      const startedAt = performance.now();
-      setStatus("Matching...");
-      appendDebug(
-        `capture ${lastCaptureInfo?.width || "-"}x${lastCaptureInfo?.height || "-"} ` +
-          `~${lastCaptureInfo?.bytes || "-"} bytes`
-      );
-      let response;
-      let payload;
-      try {
-        response = await fetch("/match", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ image: dataUrl }),
-        });
-        payload = await response.json();
-      } catch (error) {
-        setStatus("Match request failed.", true);
-        appendDebug(`match_error: ${error?.message || error}`);
-        isMatching = false;
-        return;
-      }
-      const duration = Math.round(performance.now() - startedAt);
-      if (!response.ok) {
-        setStatus(payload?.error || "No match found.", true);
-        appendDebug(
-          `match_failed status=${response.status} duration=${duration}ms ` +
-            `payload=${JSON.stringify(payload)}`
-        );
-        if (source === "auto") {
-          lastAutoMatchId = null;
-          lastAutoMatchCount = 0;
-        }
-        isMatching = false;
-        return;
-      }
-      if (source === "auto") {
-        if (payload?.riftbound_id === lastAutoMatchId) {
-          lastAutoMatchCount += 1;
-        } else {
-          lastAutoMatchId = payload?.riftbound_id || null;
-          lastAutoMatchCount = 1;
-        }
-        appendDebug(
-          `match_ok duration=${duration}ms distance=${payload?.distance} ` +
-            `id=${payload?.riftbound_id} cache_size=${payload?.cache_size} ` +
-            `stability=${lastAutoMatchCount}`
-        );
-        if (lastAutoMatchCount < 2) {
-          setStatus("Hold steady for confirmation...");
-          isMatching = false;
-          return;
-        }
-      } else {
-        appendDebug(
-          `match_ok duration=${duration}ms distance=${payload?.distance} ` +
-            `id=${payload?.riftbound_id} cache_size=${payload?.cache_size}`
-        );
-      }
-      lastMatchPayload = payload;
-      openMatchModal(payload);
-      setStatus("Match found. Please confirm.");
-      isMatching = false;
-    }
-
-    function detectCardPresence() {
-      detectCanvas.width = DETECT_WIDTH;
-      detectCanvas.height = DETECT_HEIGHT;
-      detectCtx.drawImage(liveCamera, 0, 0, DETECT_WIDTH, DETECT_HEIGHT);
-      const imageData = detectCtx.getImageData(0, 0, DETECT_WIDTH, DETECT_HEIGHT);
-      const data = imageData.data;
-      const gray = new Float32Array(DETECT_WIDTH * DETECT_HEIGHT);
-      let sum = 0;
-      for (let i = 0, j = 0; i < data.length; i += 4, j += 1) {
-        const value = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
-        gray[j] = value;
-        sum += value;
-      }
-      const mean = sum / gray.length;
-      let varianceSum = 0;
-      for (let i = 0; i < gray.length; i += 1) {
-        const delta = gray[i] - mean;
-        varianceSum += delta * delta;
-      }
-      const variance = varianceSum / gray.length;
-
-      let edgeCount = 0;
-      let centerEdgeCount = 0;
-      let borderEdgeCount = 0;
-      const centerLeft = Math.floor(DETECT_WIDTH * 0.25);
-      const centerRight = Math.floor(DETECT_WIDTH * 0.75);
-      const centerTop = Math.floor(DETECT_HEIGHT * 0.25);
-      const centerBottom = Math.floor(DETECT_HEIGHT * 0.75);
-      const borderLeft = Math.floor(DETECT_WIDTH * 0.1);
-      const borderRight = Math.floor(DETECT_WIDTH * 0.9);
-      const borderTop = Math.floor(DETECT_HEIGHT * 0.1);
-      const borderBottom = Math.floor(DETECT_HEIGHT * 0.9);
-      for (let y = 1; y < DETECT_HEIGHT - 1; y += 1) {
-        for (let x = 1; x < DETECT_WIDTH - 1; x += 1) {
-          const idx = y * DETECT_WIDTH + x;
-          const gx = gray[idx + 1] - gray[idx - 1];
-          const gy = gray[idx + DETECT_WIDTH] - gray[idx - DETECT_WIDTH];
-          const magnitude = Math.abs(gx) + Math.abs(gy);
-          if (magnitude > EDGE_THRESHOLD) {
-            edgeCount += 1;
-            if (
-              x >= centerLeft &&
-              x < centerRight &&
-              y >= centerTop &&
-              y < centerBottom
-            ) {
-              centerEdgeCount += 1;
-            }
-            if (x < borderLeft || x >= borderRight || y < borderTop || y >= borderBottom) {
-              borderEdgeCount += 1;
-            }
-          }
-        }
-      }
-      const totalPixels = (DETECT_WIDTH - 2) * (DETECT_HEIGHT - 2);
-      const centerPixels =
-        (centerRight - centerLeft) * (centerBottom - centerTop);
-      const borderPixels =
-        totalPixels - (borderRight - borderLeft) * (borderBottom - borderTop);
-      const edgeDensity = edgeCount / totalPixels;
-      const centerEdgeDensity = centerEdgeCount / centerPixels;
-      const borderEdgeDensity = borderEdgeCount / borderPixels;
-      const present =
-        variance >= VARIANCE_MIN &&
-        edgeDensity >= EDGE_DENSITY_MIN &&
-        centerEdgeDensity >= CENTER_EDGE_DENSITY_MIN &&
-        borderEdgeDensity >= BORDER_EDGE_DENSITY_MIN &&
-        borderEdgeDensity >= centerEdgeDensity * BORDER_CENTER_RATIO_MIN;
-      return {
-        present,
-        variance,
-        edgeDensity,
-        centerEdgeDensity,
-        borderEdgeDensity,
-      };
-    }
-
-    function logPresence(metrics, source, present) {
-      const now = Date.now();
-      if (!present && now - lastPresenceLog < PRESENCE_LOG_THROTTLE_MS) {
-        return;
-      }
-      lastPresenceLog = now;
-      appendDebug(
-        `card_detect ${present ? "yes" : "no"} source=${source} ` +
-          `var=${metrics.variance.toFixed(1)} ` +
-          `edge=${metrics.edgeDensity.toFixed(3)} ` +
-          `center=${metrics.centerEdgeDensity.toFixed(3)} ` +
-          `border=${metrics.borderEdgeDensity.toFixed(3)}`
-      );
-    }
-
-    liveConfirmCorrect.addEventListener("click", () => {
-      appendDebug(`confirmed_correct id=${lastMatchPayload?.riftbound_id}`);
-      closeMatchModal();
-      setStatus("Confirmed. Ready for next card.");
-    });
-
-    liveConfirmWrong.addEventListener("click", () => {
-      liveCorrection.hidden = false;
-      liveCorrectionInput.focus();
-    });
-
-    liveConfirmNone.addEventListener("click", () => {
-      appendDebug(`no_card_shown match_payload=${JSON.stringify(lastMatchPayload)}`);
-      closeMatchModal();
-      setStatus("No card shown logged. Ready for next card.");
-    });
-
-    liveSubmitCorrection.addEventListener("click", () => {
-      const correction = liveCorrectionInput.value.trim();
-      if (!correction) {
-        setStatus("Please enter the correct card name or ID.", true);
-        return;
-      }
-      appendDebug(
-        `corrected_to=${correction} match_payload=${JSON.stringify(lastMatchPayload)}`
-      );
-      closeMatchModal();
-      setStatus("Correction logged. Ready for next card.");
-    });
-
-    liveMatchModal.addEventListener("click", (event) => {
-      if (event.target === liveMatchModal) {
-        closeMatchModal();
-      }
-    });
-
-    liveDetectionModal.addEventListener("click", (event) => {
-      if (event.target === liveDetectionModal) {
-        closeDetectionModal();
-      }
-    });
-
-    document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") {
-        if (liveMatchModal.getAttribute("aria-hidden") === "false") {
-          closeMatchModal();
-        }
-        if (liveDetectionModal.getAttribute("aria-hidden") === "false") {
-          closeDetectionModal();
-        }
-      }
-    });
-
-    liveStart.addEventListener("click", startCamera);
-    liveStop.addEventListener("click", stopCamera);
-    liveScanNow.addEventListener("click", () => captureAndMatch({ source: "manual" }));
-    liveToggleAuto.addEventListener("click", toggleAutoScan);
-    debugCopy.addEventListener("click", copyDebugLog);
-    liveDetectionCorrect.addEventListener("click", () => recordDetectionFeedback(true));
-    liveDetectionWrong.addEventListener("click", () => recordDetectionFeedback(false));
-    liveDetectionNone.addEventListener("click", recordNoCardFeedback);
-    liveFeedbackDownload.addEventListener("click", () => {
-      if (!feedbackEntries.length) {
-        return;
-      }
-      const blob = new Blob([JSON.stringify(feedbackEntries, null, 2)], {
-        type: "application/json",
+      
+      // Get current collection
+      const collResp = await fetch("/collection");
+      const collData = await collResp.json();
+      const existingCards = collData.cards || [];
+      
+      // Merge pending cards
+      const cardMap = {};
+      existingCards.forEach(c => {
+        cardMap[c.card_key] = c;
       });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `riftcollector-detection-feedback-${Date.now()}.json`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      
+      pendingCards.forEach(pc => {
+        if (cardMap[pc.riftbound_id]) {
+          cardMap[pc.riftbound_id].count += 1;
+        } else {
+          cardMap[pc.riftbound_id] = {
+            card_key: pc.riftbound_id,
+            name: pc.name,
+            image_url: pc.image_url,
+            count: 1,
+          };
+        }
+      });
+      
+      const cards = Object.values(cardMap).map(c => ({
+        key: c.card_key,
+        name: c.name,
+        image_url: c.image_url,
+        count: c.count,
+      }));
+      
+      // Save
+      const saveResp = await fetch("/collection", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cards }),
+      });
+      
+      if (saveResp.ok) {
+        const addedCount = pendingCards.length;
+        pendingCards = [];
+        updatePendingUI();
+        collectionStatus.style.display = "block";
+        collectionStatus.innerHTML = `<span style="color: #22c55e;">Added ${addedCount} card(s) to your collection!</span>`;
+        setTimeout(() => { collectionStatus.style.display = "none"; }, 3000);
+      } else {
+        collectionStatus.style.display = "block";
+        collectionStatus.innerHTML = '<span style="color: #f87171;">Failed to save. Please try again.</span>';
+      }
+    }
+
+    // Event listeners
+    btnStart.addEventListener("click", startCamera);
+    btnStop.addEventListener("click", stopCamera);
+    btnConfirmYes.addEventListener("click", confirmMatch);
+    btnConfirmNo.addEventListener("click", skipMatch);
+    btnClearPending.addEventListener("click", clearPending);
+    btnAddToCollection.addEventListener("click", addToCollection);
+    
+    confirmModal.addEventListener("click", (e) => {
+      if (e.target === confirmModal) skipMatch();
+    });
+    
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && confirmModal.style.display !== "none") {
+        skipMatch();
+      }
     });
 
+    // Auto-start camera on load
     window.addEventListener("load", () => {
-      setStatus("Allow camera access, then show a Riftbound card.");
-      setDetectionStatus("Waiting for detections...");
-      updateFeedbackDownload();
-      startCamera();
-    });
-
-    window.addEventListener("beforeunload", () => {
-      stopCamera();
+      updatePendingUI();
     });
   </script>
 {% endblock %}

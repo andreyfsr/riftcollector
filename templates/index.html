@@ -15,12 +15,14 @@
       <button id="selectPhoto">Select Photo</button>
       <div class="camera-block">
         <h2>Scan with Camera</h2>
-        <video id="cameraPreview" autoplay playsinline muted></video>
+        <div id="cameraContainer" style="position: relative; width: 100%; max-width: 640px; border-radius: 12px; overflow: hidden; aspect-ratio: 16/9; background: #000;">
+          <video id="cameraPreview" autoplay playsinline muted style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; background: none;"></video>
+          <canvas id="cameraOverlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; background: none !important;"></canvas>
+        </div>
         <canvas id="cameraCanvas" hidden></canvas>
         <div class="camera-actions">
           <button id="startCamera" class="secondary" type="button">Start camera</button>
-          <button id="capturePhoto" type="button" disabled>Capture</button>
-        <button id="autoScan" class="secondary" type="button" disabled>Auto scan</button>
+          <button id="autoScan" class="secondary" type="button" disabled>Auto scan</button>
           <button id="stopCamera" class="secondary" type="button" disabled>Stop</button>
         </div>
       </div>
@@ -42,14 +44,28 @@
     </div>
   </div>
 
+  <!-- Confirmation Modal -->
+  <div id="confirmModal" class="modal-backdrop" style="display: none;">
+    <div class="modal" role="dialog" aria-modal="true">
+      <img id="modalImage" class="modal-preview" alt="Matched card" style="max-width: 200px; border-radius: 8px;" />
+      <h3 id="modalTitle">Card Detected</h3>
+      <p id="modalMeta" style="color: #94a3b8;"></p>
+      <div class="modal-actions">
+        <button id="btnConfirmYes" type="button">Yes, Add It</button>
+        <button id="btnConfirmNo" class="secondary" type="button">No, Skip</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const photoInput = document.getElementById("photoInput");
     const statusBox = document.getElementById("status");
     const selectButton = document.getElementById("selectPhoto");
     const cameraPreview = document.getElementById("cameraPreview");
     const cameraCanvas = document.getElementById("cameraCanvas");
+    const cameraOverlay = document.getElementById("cameraOverlay");
+    const overlayCtx = cameraOverlay.getContext("2d", { alpha: true });
     const startCameraButton = document.getElementById("startCamera");
-    const capturePhotoButton = document.getElementById("capturePhoto");
     const autoScanButton = document.getElementById("autoScan");
     const stopCameraButton = document.getElementById("stopCamera");
     const pendingGrid = document.getElementById("pendingGrid");
@@ -57,6 +73,15 @@
     const pendingCountMeta = document.getElementById("pendingCountMeta");
     const pendingSaveAll = document.getElementById("pendingSaveAll");
     const pendingDeleteAll = document.getElementById("pendingDeleteAll");
+    
+    // Modal elements
+    const confirmModal = document.getElementById("confirmModal");
+    const modalImage = document.getElementById("modalImage");
+    const modalTitle = document.getElementById("modalTitle");
+    const modalMeta = document.getElementById("modalMeta");
+    const btnConfirmYes = document.getElementById("btnConfirmYes");
+    const btnConfirmNo = document.getElementById("btnConfirmNo");
+    
     const storageKey = "riftbound_saved_cards";
     const savedCards = new Map();
     const pendingStorageKey = "riftbound_pending_cards";
@@ -66,6 +91,15 @@
     let cameraStream = null;
     let autoScanTimer = null;
     let isScanning = false;
+    let currentMatch = null;
+    let lastMatchId = null;
+    let matchStability = 0;
+    
+    // Auto-scan settings
+    const SCAN_INTERVAL = 400;
+    const MATCH_THRESHOLD = 28;
+    const STABILITY_REQUIRED = 2;
+    const ROI_SCALE = 0.7;
 
     function setStatus(message, isError = false) {
       if (isError) {
@@ -308,14 +342,152 @@
       }
     }
 
+    // ROI calculation
+    function getROI() {
+      const vw = cameraPreview.videoWidth || 640;
+      const vh = cameraPreview.videoHeight || 480;
+      const roiH = Math.round(vh * ROI_SCALE);
+      const roiW = Math.round(roiH / 1.4);
+      const x = Math.round((vw - roiW) / 2);
+      const y = Math.round((vh - roiH) / 2);
+      return { x, y, w: roiW, h: roiH, vw, vh };
+    }
+
+    // Draw ROI overlay
+    function drawOverlay(hasMatch = false) {
+      const { x, y, w, h, vw, vh } = getROI();
+      
+      cameraOverlay.width = vw;
+      cameraOverlay.height = vh;
+      overlayCtx.clearRect(0, 0, vw, vh);
+      
+      const color = hasMatch ? "#22c55e" : "#6366f1";
+      
+      // Draw ROI rectangle
+      overlayCtx.strokeStyle = color;
+      overlayCtx.lineWidth = 3;
+      overlayCtx.strokeRect(x, y, w, h);
+      
+      // Corner markers
+      const c = 25;
+      overlayCtx.lineWidth = 5;
+      // Top-left
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(x, y + c); overlayCtx.lineTo(x, y); overlayCtx.lineTo(x + c, y);
+      overlayCtx.stroke();
+      // Top-right
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(x + w - c, y); overlayCtx.lineTo(x + w, y); overlayCtx.lineTo(x + w, y + c);
+      overlayCtx.stroke();
+      // Bottom-left
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(x, y + h - c); overlayCtx.lineTo(x, y + h); overlayCtx.lineTo(x + c, y + h);
+      overlayCtx.stroke();
+      // Bottom-right
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(x + w - c, y + h); overlayCtx.lineTo(x + w, y + h); overlayCtx.lineTo(x + w, y + h - c);
+      overlayCtx.stroke();
+      
+      // Instruction text
+      if (!hasMatch && isScanning) {
+        overlayCtx.font = "16px system-ui, sans-serif";
+        overlayCtx.fillStyle = color;
+        overlayCtx.textAlign = "center";
+        overlayCtx.fillText("Hold card in frame", vw / 2, y + h + 30);
+      }
+    }
+
+    // Capture ROI region only
+    function captureROI() {
+      const { x, y, w, h } = getROI();
+      cameraCanvas.width = w;
+      cameraCanvas.height = h;
+      const ctx = cameraCanvas.getContext("2d");
+      ctx.drawImage(cameraPreview, x, y, w, h, 0, 0, w, h);
+      return cameraCanvas.toDataURL("image/jpeg", 0.85);
+    }
+
+    // Modal functions
+    function showConfirmModal(match) {
+      stopAutoScanLoop();
+      currentMatch = match;
+      modalImage.src = match.image_url;
+      modalTitle.textContent = match.name;
+      modalMeta.textContent = `Distance: ${match.distance}`;
+      confirmModal.style.display = "flex";
+    }
+
+    function closeConfirmModal() {
+      confirmModal.style.display = "none";
+      currentMatch = null;
+      lastMatchId = null;
+      matchStability = 0;
+      if (cameraStream && isScanning) {
+        startAutoScanLoop();
+      }
+    }
+
+    function confirmMatch() {
+      if (currentMatch) {
+        addToPending(currentMatch);
+        setStatus(`Added "${currentMatch.name}" to pending.`);
+      }
+      closeConfirmModal();
+    }
+
+    function skipMatch() {
+      setStatus("Skipped. Continue scanning.");
+      closeConfirmModal();
+    }
+
+    // Fast match using ROI
+    async function fastMatchROI() {
+      if (!cameraStream || confirmModal.style.display !== "none") return;
+      
+      const imageData = captureROI();
+      
+      try {
+        const resp = await fetch("/api/fast-match", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image: imageData, threshold: MATCH_THRESHOLD }),
+        });
+        const data = await resp.json();
+        
+        if (data.matched) {
+          // Check stability
+          if (data.riftbound_id === lastMatchId) {
+            matchStability++;
+          } else {
+            lastMatchId = data.riftbound_id;
+            matchStability = 1;
+          }
+          
+          drawOverlay(true);
+          
+          if (matchStability >= STABILITY_REQUIRED) {
+            showConfirmModal(data);
+          } else {
+            setStatus(`Hold steady... (${matchStability}/${STABILITY_REQUIRED})`);
+          }
+        } else {
+          lastMatchId = null;
+          matchStability = 0;
+          drawOverlay(false);
+          setStatus("Scanning... hold card in frame.");
+        }
+      } catch (err) {
+        console.error("Fast match error:", err);
+      }
+    }
+
+    // Legacy match using full frame (for manual capture/photo upload)
     async function matchPhoto() {
       if (!selectedDataUrl) {
         setStatus("Select a photo first.", true);
         return;
       }
-      if (!isScanning) {
-        setStatus("Matching...");
-      }
+      setStatus("Matching...");
 
       const response = await fetch("/match", {
         method: "POST",
@@ -325,15 +497,11 @@
 
       const payload = await response.json();
       if (!response.ok) {
-        if (!isScanning) {
-          setStatus(payload.error || "Match failed", true);
-        }
+        setStatus(payload.error || "Match failed", true);
         return;
       }
 
-      if (!isScanning) {
-        setStatus("Match added to pending list.");
-      }
+      setStatus("Match added to pending list.");
       if (payload.image_url) {
         addToPending(payload);
       }
@@ -375,17 +543,46 @@
         return;
       }
       try {
+        setStatus("Requesting camera access...");
         cameraStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "environment" },
+          video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
           audio: false,
         });
+        
         cameraPreview.srcObject = cameraStream;
-        capturePhotoButton.disabled = false;
+        
+        // Wait for video metadata to load
+        await new Promise((resolve, reject) => {
+          cameraPreview.onloadedmetadata = () => {
+            console.log("Video dimensions:", cameraPreview.videoWidth, "x", cameraPreview.videoHeight);
+            resolve();
+          };
+          cameraPreview.onerror = (e) => reject(e);
+          setTimeout(() => resolve(), 3000); // Fallback timeout
+        });
+        
+        // Explicitly play
+        try {
+          await cameraPreview.play();
+          console.log("Video playing, readyState:", cameraPreview.readyState);
+        } catch (playError) {
+          console.warn("Autoplay blocked, user interaction may be needed:", playError);
+        }
+        
+        // Check if video is actually rendering
+        if (cameraPreview.videoWidth === 0 || cameraPreview.videoHeight === 0) {
+          console.warn("Video dimensions are 0, stream may not be working");
+        }
+        
         autoScanButton.disabled = false;
         stopCameraButton.disabled = false;
         startCameraButton.disabled = true;
-        setStatus("Camera ready. Tap capture to scan.");
+        setStatus("Camera ready. Tap capture or enable auto scan.");
+        
+        // Draw overlay after a short delay to ensure video is rendering
+        setTimeout(() => drawOverlay(false), 100);
       } catch (error) {
+        console.error("Camera error:", error);
         setStatus("Camera permission denied or unavailable.", true);
       }
     }
@@ -397,57 +594,49 @@
         cameraStream = null;
       }
       cameraPreview.srcObject = null;
-      capturePhotoButton.disabled = true;
+      overlayCtx.clearRect(0, 0, cameraOverlay.width, cameraOverlay.height);
       autoScanButton.disabled = true;
       stopCameraButton.disabled = true;
       startCameraButton.disabled = false;
       setStatus("Camera stopped.");
     }
 
-    function captureFromCamera() {
-      if (!cameraPreview || !cameraStream) {
-        setStatus("Start the camera before capturing.", true);
-        return;
-      }
-      const width = cameraPreview.videoWidth || 1280;
-      const height = cameraPreview.videoHeight || 720;
-      cameraCanvas.width = width;
-      cameraCanvas.height = height;
-      const ctx = cameraCanvas.getContext("2d");
-      ctx.drawImage(cameraPreview, 0, 0, width, height);
-      selectedDataUrl = cameraCanvas.toDataURL("image/jpeg", 0.92);
-      matchPhoto();
+    function startAutoScanLoop() {
+      if (autoScanTimer) return;
+      autoScanTimer = setInterval(fastMatchROI, SCAN_INTERVAL);
     }
 
-    function startAutoScan() {
-      if (!cameraStream || isScanning) {
-        return;
-      }
-      isScanning = true;
-      autoScanButton.textContent = "Stop auto";
-      autoScanButton.classList.remove("secondary");
-      setStatus("Auto scanning... hold card steady.");
-      autoScanTimer = setInterval(() => {
-        if (!cameraStream) return;
-        captureFromCamera();
-      }, 1800);
-    }
-
-    function stopAutoScan() {
-      if (!isScanning) return;
-      isScanning = false;
-      autoScanButton.textContent = "Auto scan";
-      autoScanButton.classList.add("secondary");
+    function stopAutoScanLoop() {
       if (autoScanTimer) {
         clearInterval(autoScanTimer);
         autoScanTimer = null;
       }
     }
 
+    function startAutoScan() {
+      if (!cameraStream) return;
+      isScanning = true;
+      autoScanButton.textContent = "Stop auto";
+      autoScanButton.classList.remove("secondary");
+      setStatus("Auto scanning... hold card in frame.");
+      drawOverlay(false);
+      startAutoScanLoop();
+    }
+
+    function stopAutoScan() {
+      isScanning = false;
+      autoScanButton.textContent = "Auto scan";
+      autoScanButton.classList.add("secondary");
+      stopAutoScanLoop();
+      lastMatchId = null;
+      matchStability = 0;
+      overlayCtx.clearRect(0, 0, cameraOverlay.width, cameraOverlay.height);
+      setStatus("Auto scan stopped.");
+    }
+
     function toggleAutoScan() {
       if (isScanning) {
         stopAutoScan();
-        setStatus("Auto scan stopped.");
       } else {
         startAutoScan();
       }
@@ -455,8 +644,19 @@
 
     startCameraButton.addEventListener("click", startCamera);
     stopCameraButton.addEventListener("click", stopCamera);
-    capturePhotoButton.addEventListener("click", captureFromCamera);
     autoScanButton.addEventListener("click", toggleAutoScan);
+
+    // Modal event listeners
+    btnConfirmYes.addEventListener("click", confirmMatch);
+    btnConfirmNo.addEventListener("click", skipMatch);
+    confirmModal.addEventListener("click", (e) => {
+      if (e.target === confirmModal) skipMatch();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && confirmModal.style.display !== "none") {
+        skipMatch();
+      }
+    });
 
     pendingGrid.addEventListener("click", (event) => {
       const button = event.target.closest("button[data-action]");
